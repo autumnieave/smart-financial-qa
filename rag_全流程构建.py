@@ -1,0 +1,27 @@
+"""rag_全流程构建.py - RAG全流程构建入口文件（CLI 启动器）
+
+仅负责环境初始化并委托 scripts.interactive.main，具体逻辑见 scripts/。
+
+使用方式: python rag_全流程构建.py
+"""
+
+import logging
+import os
+import sys
+
+from dotenv import load_dotenv
+from scripts.interactive import main as interactive_main
+
+load_dotenv()
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+
+
+if __name__ == "__main__":
+    interactive_main()

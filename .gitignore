@@ -1,0 +1,66 @@
+# ===== 密钥与环境 =====
+.env
+.env.*
+!.env.example
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+*.egg-info/
+.ipynb_checkpoints/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ===== 前端 =====
+qa-frontend/node_modules/
+qa-frontend/dist/
+qa-frontend/.env
+qa-frontend/.env.*
+
+# ===== 运行时数据 =====
+qdrant_storage/
+result/
+测试数据/
+B题数据及提交说明/
+汇总结果/
+训练结果数据/
+database/chat_memory.db*
+database/langgraph_checkpoints.sqlite*
+database/query_cache.db*
+database/bm25_index*.pkl
+
+# ===== 历史归档与备份 =====
+archive/
+*.bak
+*.old
+
+# ===== IDE / 系统 =====
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# ===== 临时文件 =====
+temp_debug_snippet.txt
+_*.py
+_*.txt
+_*.log
+!**/__init__.py
+
+# ===== 数据工具输出（可再生产物，不入 git） =====
+/failed_files.txt
+/*.csv
+
+# ===== 文档（二进制 / 面试材料，不上传 GitHub） =====
+docs/论文/
+docs/*.pdf
+docs/面试准备/
+docs/课程作业/
+
+database/测试数据库.sql
+
+database/训练数据库.sql
