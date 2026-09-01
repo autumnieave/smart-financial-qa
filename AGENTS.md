@@ -13,7 +13,7 @@ RAG 金融研报智能问数系统：基于检索增强生成（RAG）的上市�
 | `config/` | 全局配置：`RAGConfig`（模型/路径/检索/引用校验参数，唯一配置源，含组件工厂与 `get_config()` 单例）；`langchain_config.py` 仅为兼容层（`EmbeddingClientAdapter` + 别名），下一阶段删除 |
 | `prompts/` | 唯一 Prompt 目录：`rag.py`（RAG 问答，手写/LCEL 同源）、`pipeline.py`（字段提取/摘要/图片检测）、`agent.py`（Agent system prompt）；新增 Prompt 一律放此，修改后更新 `PROMPT_VERSION` |
 | `core/` | 链路收敛接口：`interfaces.py`（`IRetriever/IReranker/IGenerator` 三协议）、`retrievers.py`（`HandwrittenRetriever` 默认 / `LangChainRetriever` 实验）、`rerankers.py` + `generators.py`（适配层） |
-| `eval/` | 评估闭环：`golden.py`（golden set 版本化，`database/golden/`）、`runner.py`（`python -m eval` 统一入口：golden/sql/citation/report）、`metrics.py`（报告聚合） |
+| `eval/` | 评估闭环：`golden.py`（golden set 版本化，`database/golden/`，本地资产不入库）、`runner.py`（`python -m eval` 统一入口：golden/sql/citation/report）、`metrics.py`（报告聚合） |
 | `data/` | 研报 Markdown 加载、Excel 元数据匹配、文本分块与 HTML/Markdown 表格抽取 |
 | `embeddings/` | `EmbeddingClient`：通过 DashScope HTTP API 生成向量（text-embedding-v2，1536 维） |
 | `vectorstore/` | `QdrantClientWrapper`：Qdrant 集合读写、检索、清空封装 |

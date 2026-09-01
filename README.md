@@ -2,13 +2,13 @@
 
 面向上市公司研报与财报的端到端智能问答系统：用户用自然语言即可查询财务数据、研报观点，答案带引用可溯源。采用 **LangGraph 多 Agent 编排 + SQL 财务链路 + RAG 研报链路**，配套 FastAPI / React 前端与完整评估闭环。
 
-[![CI](https://github.com/autumnieave/smart-financial-qa/actions/workflows/ci.yml/badge.svg)](https://github.com/autumnieave/smart-financial-qa/actions/workflows/ci.yml) [![tests](https://img.shields.io/badge/117%20tests-passing-brightgreen)]() [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![CI](https://github.com/autumnieave/smart-financial-qa/actions/workflows/ci.yml/badge.svg)](https://github.com/autumnieave/smart-financial-qa/actions/workflows/ci.yml) [![tests](https://img.shields.io/badge/123%20tests-passing-brightgreen)]() [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 ## 核心指标
 
 - **SQL 编译通过率：96.9% → 100%**（80 题全量回归：Agent 口径 224/224，原生 SQL 链路 102/102）
 - **引用文件可溯源 100%（1080/1080）**、**答案数字可溯源 100%**（归一化口径），人工回查真实幻觉 **0 例**
-- **117 个离线单测全部通过**（零外部依赖，CI 自动执行）
+- **123 个离线单测全部通过**（零外部依赖，CI 自动执行）
 - 数字级引用命中率 **70.2% → 74.9%**（混合检索：向量 + BM25 + RRF）
 
 ## 功能亮点
@@ -89,10 +89,13 @@ docker compose up -d --build
 
 {anchor}
 
-### 数据说明
+### 数据与评估资产说明
 
-- **研报与财务数据不随仓库分发**（竞赛数据）：研报语料按 `docs/DEPLOYMENT.md` 放置后运行 `python rag_全流程构建.py --build` 构建索引；财务数据由公开财报经 `tools/data_scripts/pdf处理+校验入库.py` 抽取入库（表结构见 `database/schema.sql`，仅建表、不含数据）。
+- **原始数据不随仓库分发**（竞赛数据，按版权不公开）：研报语料按 `docs/DEPLOYMENT.md` 放置后运行 `python rag_全流程构建.py --build` 构建索引；财务数据由公开财报经 `tools/data_scripts/pdf处理+校验入库.py` 抽取入库（表结构见 `database/schema.sql`，仅建表、不含数据）。
+- **评估资产为本地 gitignored 资产，不入库**：golden 快照（`database/golden/`，80 题/108 子问题评估基准）、字段抽取记录（`database/extracted_missing_fields.csv`）及各回归明细 JSON 仅保存在本地，用于复现文档中的评估口径。
+- **可复现范围**：源码、离线单测（零外部依赖）、CI 与评估框架完整入库，clone 后即可运行；完整数据与评估基准需按文档自备。
 - **安全提示**：MySQL 默认密码（`MYSQL_ROOT_PASSWORD` / `MYSQL_PASSWORD` = `123456`）仅用于本地开发，生产/公网部署务必通过 `.env` 修改。
+
 
 ## 交互命令
 
@@ -109,11 +112,13 @@ docker compose up -d --build
 ## 测试与评估
 
 ```bash
-python -m pytest tests/ -q        # 117 个离线单测（零外部依赖）
-python -m eval sql --suite full   # SQL 全量回归
-python -m eval citation           # L1 引用核验
+python -m pytest tests/ -q        # 123 个离线单测（零外部依赖）
+python -m eval sql --suite full   # SQL 全量回归（需本地 golden 数据）
+python -m eval citation           # L1 引用核验（需本地语料）
 python -m eval report             # 聚合评估报告
 ```
+
+> 说明：`python -m eval` 依赖本地评估资产（golden 快照等，不入库），缺失时仅影响评估复现，不影响系统运行；单测不依赖任何外部服务与数据。
 
 - CI：`.github/workflows/ci.yml` 在 `master` push / PR 时自动执行全部单测
 - 评估口径与逐题明细见 `docs/评估报告/评估报告.md`、`docs/评估报告/SQL编译修复前后对比报告.md`、`docs/问题记录/badcase_台账.md`
@@ -141,7 +146,7 @@ pipelines/      RAGPipeline 全流程编排
 agents/         LangGraph 多 Agent + 自研 AgentPlanner（对照）
 prompts/        唯一 Prompt 目录
 tools/          SQL 校验器 / 原生财务查询 / 数据处理脚本
-tests/          117 个离线单测
+tests/          123 个离线单测
 qa-frontend/    React 19 前端
 ```
 
