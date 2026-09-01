@@ -6,11 +6,11 @@
 
 ## 项目背景
 
-- 赛题："上市公司财报'智能问数'助手"（B 题），数据来自 `测试数据/附件5：研报数据/`（个股研报解析结果 96 个 .md、行业研报解析结果 68 个 .md、元数据 Excel）。
+- 赛题："上市公司财报'智能问数'助手"（B 题），数据来自 `<数据目录>/附件5：研报数据/`（个股研报解析结果 96 个 .md、行业研报解析结果 68 个 .md、元数据 Excel）。
 - 原始版本为单体 `rag_全流程构建.py`，后按模块拆分（config/data/embeddings/vectorstore/chains/llm/agents/memory/filters/pipelines/scripts/tools/utils），主文件仅保留导入与入口。
 - 财务结构化数据在 MySQL（`financial_database`，7 张表：dim_stock_info、core_performance_indicators_sheet、balance_sheet、income_sheet、cash_flow_sheet、dify、log_data_validation），由原生 SQL 链路查询（`tools/native_financial.py`）；建表脚本见 `database/schema.sql`（数据由 `tools/data_scripts/pdf处理+校验入库.py` 从公开财报抽取入库，原始数据不入库）。
 - 2026-08 完成目录整理：Notebook → `notebooks/`，SQL/YML/CSV → `database/`，文档资料 → `docs/`，数据处理脚本 → `tools/data_scripts/`，旧版程序与临时文件 → `archive/`。
-- 2026-08 初始化 git 仓库（`master`，首次提交 `02ce98a`）；`.gitignore` 排除 `.env` 与约 7.3GB 大数据目录（B题数据/测试数据/qdrant_storage/.venv 等），仅提交源码+文档+配置。
+- 2026-08 初始化 git 仓库（`master`，首次提交 `02ce98a`）；`.gitignore` 排除 `.env` 与约 7.3GB 大数据目录（<竞赛数据>/<数据目录>/qdrant_storage/.venv 等），仅提交源码+文档+配置。
 
 ## 核心技术决策及原因
 

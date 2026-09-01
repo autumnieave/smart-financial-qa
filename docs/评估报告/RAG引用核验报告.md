@@ -6,9 +6,9 @@
 > `docs/评估报告/答案质量回归报告.md`（归一化口径端到端 100.0%）。对外表述以新口径为准，本报告保留历史基线。
 
 - 核验日期：2026-08-20
-- 数据源：`训练结果数据/result_3_parallel.xlsx`（80 题结构化输出）
+- 数据源：`<结果数据>/result_3_parallel.xlsx`（80 题结构化输出）
 - 核验对象：80 题中带引用的 61 题，共 276 条引用
-- 证据存档：`训练结果数据/_l1_records.json`（276 条逐条核验明细，含 status / num_hit / located）
+- 证据存档：`<结果数据>/_l1_records.json`（276 条逐条核验明细，含 status / num_hit / located）
 - 配套文档：`docs/问题记录/9题端到端人工抽检记录.md`（答案语义层）、`docs/评估报告/SQL编译修复前后对比报告.md`（查询生成层）
 
 ## 一、为什么做这次核验
@@ -120,7 +120,7 @@
 - 校验器已正式落地为 `pipelines/citation_validator.py`（`CitationValidator` 类），实现文件可溯源（exact / fuzzy / missing）与数字可溯源（raw / comma / loose 三种口径）。
 - 已接入 `RAGPipeline.validate_citations()` 提供核验能力，并进一步接入在线链路：`query()` 返回前自动执行 L1 核验，按配置过滤文件缺失引用（`CITATION_FILTER_MISSING=True`），数字零命中过滤默认关闭（`CITATION_FILTER_ZERO_HIT=False`，避免误杀改写摘要），可经 `CITATION_CHECK_ON_QUERY` 一键关闭。
 - 提供独立复跑入口：`python rag_全流程构建.py --validate-refs 引用.json --refs-mode comma`（元素含 paper_path / text，输出汇总并在同目录生成 *_citation_report.json 明细）。
-- 提供复跑数据生成脚本：`python tools/data_scripts/export_citations.py --input 训练结果数据/result_3_parallel.xlsx --output 训练结果数据/references_all.json`，从评测结果 Excel 抽取全部引用（80 题 / 61 题带引用 / 276 条），再配合 --validate-refs 全量复跑。
+- 提供复跑数据生成脚本：`python tools/data_scripts/export_citations.py --input <结果数据>/result_3_parallel.xlsx --output <结果数据>/references_all.json`，从评测结果 Excel 抽取全部引用（80 题 / 61 题带引用 / 276 条），再配合 --validate-refs 全量复跑。
 - 配置项：`config/rag_config.py` 新增 `CITATION_CORPUS_ROOT`（支持环境变量）与 `CITATION_MATCH_MODE`。
 - 一致性回归：用新模块重跑 276 条引用，文件可溯源分布（254 / 20 / 2）与 116 条全命中、7 条零命中结论与本次 L1 核验完全一致。
-- 全量复跑命令 `python rag_全流程构建.py --validate-refs 训练结果数据/references_all.json` 复现 99.3% 文件可溯源、490/592 = 82.8% 数字命中，与报告口径完全一致。
+- 全量复跑命令 `python rag_全流程构建.py --validate-refs <结果数据>/references_all.json` 复现 99.3% 文件可溯源、490/592 = 82.8% 数字命中，与报告口径完全一致。

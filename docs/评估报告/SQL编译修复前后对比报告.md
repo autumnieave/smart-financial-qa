@@ -3,7 +3,7 @@
 > **历史文档标注（2026-08-30）**：本文记录 Dify 迁移下线前的实验与回归口径，属历史证据；当前财务查询走原生 SQL 链路（`tools/native_financial.py`），运行时已无 Dify 依赖。
 
 - **项目**：上市公司"智能问数"助手（RAG + Agent）
-- **数据来源**：`训练结果数据/result_3_parallel.xlsx`（80 题 6 类典型查询批量回归）
+- **数据来源**：`<结果数据>/result_3_parallel.xlsx`（80 题 6 类典型查询批量回归）
 - **校验方式**：逐句 SQL 在 MySQL `financial_database` 上真实执行（`MAX_EXECUTION_TIME=15s`）
 - **报告日期**：2026-08-17
 
@@ -87,10 +87,10 @@
 - `docs/问题记录/badcase_台账.md` —— 9 条 badcase 逐条明细与状态跟踪
 - `docs/问题记录/提示词.txt` —— SQL 生成 Prompt（含新规则 6/7/8）
 - `database/任务二 (4).yml` —— Dify 工作流导出（SQL 生成节点已同步）
-- `训练结果数据/sql_compile_report.csv`、`regression_final.json` 等 —— 校验明细数据（不入 git）
-- `训练结果数据/e2e_diag.json` / `e2e_diag_temp01.json` / `e2e_diag_final.json` —— 端到端复验前后明细（不入 git）
+- `<结果数据>/sql_compile_report.csv`、`regression_final.json` 等 —— 校验明细数据（不入 git）
+- `<结果数据>/e2e_diag.json` / `e2e_diag_temp01.json` / `e2e_diag_final.json` —— 端到端复验前后明细（不入 git）
 - `tools/sql_validator.py`、`tools/data_scripts/sql_validator_selftest.py` / `sql_guard_regression.py` / `sql_guard_repair_demo.py` —— 工程化拦截（SQL 校验器 + 守卫回归）
-- `训练结果数据/sql_guard_results.json`、`sql_guard_repair_demo.json` —— 守卫回归与修复演示明细（不入 git）
+- `<结果数据>/sql_guard_results.json`、`sql_guard_repair_demo.json` —— 守卫回归与修复演示明细（不入 git）
 
 
 在 SQL 生成后、执行前增加静态校验 + 失败自动重试，把"模型输出"纳入可控质量闸门：
@@ -145,8 +145,8 @@
 
 - `tools/data_scripts/sql_full_regression.py` —— 全量 80 题回归脚本（断点续跑、单发、静态+编译双重校验）
 - `tools/data_scripts/sql_full_regression_compare.py` —— 基线 vs 回归逐题对比报告生成
-- `训练结果数据/sql_full_regression.jsonl` / `sql_full_regression.json` / `sql_full_regression_summary.json` —— 回归明细与汇总（不入 git）
-- `训练结果数据/sql_full_regression_对比.md` —— 逐题对比（不入 git）
+- `<结果数据>/sql_full_regression.jsonl` / `sql_full_regression.json` / `sql_full_regression_summary.json` —— 回归明细与汇总（不入 git）
+- `<结果数据>/sql_full_regression_对比.md` —— 逐题对比（不入 git）
 
 
 上一节为"子问题单发"口径（与 9 题端到端复验一致）；本节复刻基线 `result_3_parallel.xlsx` 的
@@ -201,8 +201,8 @@
 
 
 - `tools/data_scripts/sql_agent_regression.py` —— Agent 多轮累积口径全量回归脚本（断点续跑、同口径）
-- `训练结果数据/sql_agent_regression.jsonl` / `.json` / `_summary.json` —— 回归明细与汇总（不入 git）
-- `训练结果数据/sql_agent_regression_对比.md` —— 与基线逐题对比（不入 git）
+- `<结果数据>/sql_agent_regression.jsonl` / `.json` / `_summary.json` —— 回归明细与汇总（不入 git）
+- `<结果数据>/sql_agent_regression_对比.md` —— 与基线逐题对比（不入 git）
 
 
 针对全量回归暴露的 A 类字段-表归属问题（B2045/B2063/B2051）与 B2035 虚构子查询表，做第三轮闭环。
@@ -294,5 +294,5 @@
 
 **产物**：
 - 脚本：`tools/data_scripts/sql_full_regression_native.py`（断点续跑，`--limit/--only/--backend/--progress-every`，golden sha256 校验，强制关缓存）；
-- 明细/汇总：`训练结果数据/sql_full_regression_native.jsonl` / `.json` / `_summary.json`（不入 git）；
+- 明细/汇总：`<结果数据>/sql_full_regression_native.jsonl` / `.json` / `_summary.json`（不入 git）；
 - 评估报告：`docs/评估报告/评估报告.md`（`python -m eval report` 自动聚合，四条口径并列）。
