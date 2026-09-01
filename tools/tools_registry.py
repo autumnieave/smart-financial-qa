@@ -1,0 +1,107 @@
+from typing import List, Dict, Any
+
+
+def get_agent_tools() -> List[Dict[str, Any]]:
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "search_reports",
+                "description": "从研报知识库中检索信息，用于回答归因分析、公司评价、政策解读等问题。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "检索查询语句，应包含关键主体、具体时间和服务问题焦点"
+                        }
+                    },
+                    "required": ["query"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "query_financial_and_visualize",
+                "description": """当问题不完整（缺少主体、时间、查询指标）时，返回反问，让用户补充。当问题完整时，根据需求生成sql查询语句，从数据库中查询结构化财务数据，并根据数据自动生成图表（如折线图、柱状图）。支持单主体查询、多主体对比、全市场排名/TOP-N、聚合统计（如“利润最高的top10企业”“某指标最大的企业”），不要以“仅支持单一企业”为由拒绝此类查询。该工具可以查询如下表格中的字段：### 1. 核心业绩指标表 (`core_performance_indicators_sheet`)
+                        - `eps`: 每股收益(元)
+                        - `total_operating_revenue`: 营业总收入(万元)
+                        - `operating_revenue_yoy_growth`: 营业总收入-同比增长(%)
+                        - `operating_revenue_qoq_growth`: 营业总收入-季度环比增长(%)
+                        - `net_profit_10k_yuan`: 净利润(万元)
+                        - `net_profit_yoy_growth`: 净利润-同比增长(%)
+                        - `net_profit_qoq_growth`: 净利润-季度环比增长(%)
+                        - `net_asset_per_share`: 每股净资产(元)
+                        - `roe`: 净资产收益率(%)
+                        - `operating_cf_per_share`: 每股经营现金流量(元)
+                        - `net_profit_excl_non_recurring`: 扣非净利润（万元）
+                        - `net_profit_excl_non_recurring_yoy`: 扣非净利润同比增长（%）
+                        - `gross_profit_margin`: 销售毛利率(%)
+                        - `net_profit_margin`: 销售净利润率(%)
+                        - `roe_weighted_excl_non_recurring`: 加权平均净资产收益率（扣非）（%）
+
+                        ### 2. 资产负债表 (`balance_sheet`)
+                        - `asset_cash_and_cash_equivalents`: 资产-货币资金(万元)
+                        - `asset_accounts_receivable`: 资产-应收账款(万元)
+                        - `asset_inventory`: 资产-存货(万元)
+                        - `asset_trading_financial_assets`: 资产-交易性金融资产（万元）
+                        - `asset_construction_in_progress`: 资产-在建工程（万元）
+                        - `asset_total_assets`: 资产-总资产(万元)
+                        - `asset_total_assets_yoy_growth`: 资产-总资产同比(%)
+                        - `liability_accounts_payable`: 负债-应付账款(万元)
+                        - `liability_advance_from_customers`: 负债-预收账款(万元)
+                        - `liability_total_liabilities`: 负债-总负债(万元)
+                        - `liability_total_liabilities_yoy_growth`: 负债-总负债同比(%)
+                        - `liability_contract_liabilities`: 负债-合同负债（万元）
+                        - `liability_short_term_loans`: 负债-短期借款（万元）
+                        - `asset_liability_ratio`: 资产负债率(%)
+                        - `equity_unappropriated_profit`: 股东权益-未分配利润（万元）
+                        - `equity_total_equity`: 股东权益合计(万元)
+
+                        ### 3. 现金流量表 (`cash_flow_sheet`)
+                        - `net_cash_flow`: 净现金流(元) - 注意单位是元
+                        - `net_cash_flow_yoy_growth`: 净现金流-同比增长(%)
+                        - `operating_cf_net_amount`: 经营性现金流-现金流量净额(万元)
+                        - `operating_cf_ratio_of_net_cf`: 经营性现金流-净现金流占比(%)
+                        - `operating_cf_cash_from_sales`: 经营性现金流-销售商品收到的现金（万元）
+                        - `investing_cf_net_amount`: 投资性现金流-现金流量净额（万元）
+                        - `investing_cf_ratio_of_net_cf`: 投资性现金流-净现金流占比(%)
+                        - `investing_cf_cash_for_investments`: 投资性现金流-投资支付的现金（万元）
+                        - `investing_cf_cash_for_investment_recovery`: 投资性现金流-收回投资收到的现金（万元）
+                        - `financing_cf_cash_from_borrowing`: 融资性现金流-取得借款收到的现金（万元）
+                        - `financing_cf_cash_for_debt_repayment`: 融资性现金流-偿还债务支付的现金（万元）
+                        - `financing_cf_net_amount`: 融资性现金流-现金流量净额(万元)
+                        - `financing_cf_ratio_of_net_cf`: 融资性现金流-净现金流占比(%)
+
+                        ### 4. 利润表 (`income_sheet`)
+                        - `net_profit`: 净利润(万元)
+                        - `net_profit_yoy_growth`: 净利润同比(%)
+                        - `other_income`: 其他收益（万元）
+                        - `total_operating_revenue`: 营业总收入(万元)
+                        - `operating_revenue_yoy_growth`: 营业总收入同比(%)
+                        - `operating_expense_cost_of_sales`: 营业总支出-营业支出(万元)
+                        - `operating_expense_selling_expenses`: 营业总支出-销售费用(万元)
+                        - `operating_expense_administrative_expenses`: 营业总支出-管理费用(万元)
+                        - `operating_expense_financial_expenses`: 营业总支出-财务费用(万元)
+                        - `operating_expense_rnd_expenses`: 营业总支出-研发费用（万元）
+                        - `operating_expense_taxes_and_surcharges`: 营业总支出-税金及附加（万元）
+                        - `total_operating_expenses`: 营业总支出(万元)
+                        - `operating_profit`: 营业利润(万元)
+                        - `total_profit`: 利润总额(万元)
+                        - `asset_impairment_loss`: 资产减值损失（万元）
+                        - `credit_impairment_loss`: 信用减值损失（万元）
+                    """,
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "用户的自然语言问题，例如 '云南白药2024年第三季度营收和净利润是多少'"
+                            }
+                        },
+                        "required": ["query"]
+                    }
+                }
+            }
+        ]
