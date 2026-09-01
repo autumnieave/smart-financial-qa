@@ -9,7 +9,7 @@
 - 管线引用路径：检索（混合 200+200）→ 软过滤 → 表聚合 → Rerank(20→每文件≤2→10) → 引用构建 → 引用核验过滤；生成阶段置空（引用与生成无关，仅测引用路径）
 - L1 核验：`CitationValidator`（comma 口径），指标 = 文件可溯源率 + 数字命中率
 - 对照组：`TABLE_AGG_TOPK=20`（收敛） vs `TABLE_AGG_TOPK=0`（全量聚合）
-- 数据文件：`训练结果数据/l1_topk{20,0}_refs.json` 与 `*_citation_report.json`
+- 数据文件：`<结果数据>/l1_topk{20,0}_refs.json` 与 `*_citation_report.json`
 
 ## 结果（修复索引错位 bug 后）
 

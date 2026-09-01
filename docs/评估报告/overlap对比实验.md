@@ -20,7 +20,7 @@
 - 指标：去重后块数、平均块长、相邻块实际重叠（字符与占比）、块尾句完整度
 
 ### 阶段 2：检索命中对比（小样本，golden 引用子集）
-- 子集：`训练结果数据/references_all.json` 的 112 个引用文件 → 语料中命中 103 篇
+- 子集：`<结果数据>/references_all.json` 的 112 个引用文件 → 语料中命中 103 篇
 - 用 `--chunk-overlap` 构建两个仅 overlap 不同的实验集合：
   - `_exp_o100`：14,933 点（overlap=100）
   - `_exp_o150`：14,981 点（overlap=150）
@@ -67,7 +67,7 @@
 - overlap=150 的额外重叠（实际多 23 字符/块）没有带来"更不易断裂"的检索收益，反而因块间重复内容
   挤占 top-K 与 Rerank 名额，文件级命中在召回层与精排后**全面落后 0.3~3.0pp**。
 - 数字级命中两值持平（召回层 77.1% = 77.1%；cap=2 精排后 64.6% vs 64.8%，差异在噪声水平）。
-- 完整逐题明细：`训练结果数据/overlap_cmp_o100.json` / `overlap_cmp_o150.json`；
+- 完整逐题明细：`<结果数据>/overlap_cmp_o100.json` / `overlap_cmp_o150.json`；
   中间报告：`docs/评估报告/overlap对比实验.md` / `docs/评估报告/overlap对比实验.md`。
 
 ## 五、结论与口径统一
@@ -99,7 +99,7 @@
 | 精排后 数字级（混合，cap=2） | 59.1% | 58.3% | -0.8pp |
 
 - 结论：重建后指标与旧索引一致（±0.8pp 内噪声），**索引质量无退化**；重建明细
-  `训练结果数据/retrieval_cmp_v3full_rebuilt.json`，报告 `docs/评估报告/检索对比实验.md`。
+  `<结果数据>/retrieval_cmp_v3full_rebuilt.json`，报告 `docs/评估报告/检索对比实验.md`。
 - 实验集合 `_exp_o100` / `_exp_o150` 已删除（复现命令见下）。
 
 ## 六、复现命令
@@ -122,7 +122,7 @@ python -X utf8 -m tools.data_scripts.rebuild_full_index --collection research_re
 
 ## 附录：中间报告数据（_exp_o100 / _exp_o150 实验集合）
 
-> 完整逐题明细：`训练结果数据/overlap_cmp_o100.json` / `overlap_cmp_o150.json`；原中间报告已并入本文。
+> 完整逐题明细：`<结果数据>/overlap_cmp_o100.json` / `overlap_cmp_o150.json`；原中间报告已并入本文。
 
 ### 召回层 top-K=50（聚合）
 

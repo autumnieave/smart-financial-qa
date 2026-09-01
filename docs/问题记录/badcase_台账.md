@@ -1,10 +1,10 @@
 # Badcase 台账：SQL 编译失败样例（result_3 批量回归）
 
-- **来源**：`训练结果数据/result_3_parallel.xlsx`（80 题批量回归，最新完整版）
+- **来源**：`<结果数据>/result_3_parallel.xlsx`（80 题批量回归，最新完整版）
 - **校验方式**：逐句 SELECT 在 MySQL `financial_database` 上真实执行（`MAX_EXECUTION_TIME=15s`）
 - **校验日期**：2026-08-17
 - **校验结果**：291 句 SQL 中 282 句通过（96.9%）；修复后 Agent 同口径回归 224/224 = 100.0%、单发口径 52/52 = 100.0%。本台账收录 **12 条编译失败语句**，第三轮补强后**全部闭环**（B2035/B2051/B2045/B2063 重跑验证见第十一节）
-- **明细数据**：`训练结果数据/sql_compile_report.csv`、`训练结果数据/badcase_sql_failures.json`
+- **明细数据**：`<结果数据>/sql_compile_report.csv`、`<结果数据>/badcase_sql_failures.json`
 
 ## 一、汇总
 
@@ -121,7 +121,7 @@ WHERE stock_abbr LIKE '%云南白药%' AND (...)
 | 第2轮 | 规则6 补「字段→表速查」 | 8/9（B2068 偶发 1/3） |
 | 第3轮 | 规则6 加 JOIN 正例/反例 | **9/9（B2068 3/3 稳定）** |
 
-- 明细：`训练结果数据/regression_results.json`、`regression_round2.json`、`regression_final.json`
+- 明细：`<结果数据>/regression_results.json`、`regression_round2.json`、`regression_final.json`
 - 结论：**9 条编译失败样例经 3 轮 prompt 迭代全部修复并通过回归**，闭环成立；语句级编译通过率口径可从 96.9% 提升到接近 100%（9 条修复样本）。
 
 ## 七、真端到端复验记录（2026-08-17，Dify 全链路）
@@ -131,7 +131,7 @@ WHERE stock_abbr LIKE '%云南白药%' AND (...)
 - MySQL `financial_database`（127.0.0.1:3306）逐句编译执行，`MAX_EXECUTION_TIME=15s`
 - 链路：用户问题 → Dify「问题重构 → 判断问题是否清晰（语义转化）→ SQL 生成」→ 提取 SQL → MySQL 校验
 
-### 复验前（`训练结果数据/e2e_diag.json`，规则 6/7/8 已生效，但未含本轮新增规则）
+### 复验前（`<结果数据>/e2e_diag.json`，规则 6/7/8 已生效，但未含本轮新增规则）
 | 编号 | 结果 | 失败原因 |
 | --- | --- | --- |
 | B2007 | 1/1 ✓ | 子问题 2/3 正确判为"与数据查询无关"（无 SQL） |
@@ -153,7 +153,7 @@ WHERE stock_abbr LIKE '%云南白药%' AND (...)
 6. **单表优先规则**（SQL 节点）：SELECT 所需字段全部同属一张表时，必须单表查询，严禁无谓 JOIN（修复 B2049 偶发把 `net_profit` 误挂 core 表）。
 7. **节点参数**：SQL 生成节点与语义节点 temperature 0.7 → 0.1（降低 LLM 采样波动）。
 
-### 复验后（`训练结果数据/e2e_diag_temp01.json`、`e2e_diag_final.json`）
+### 复验后（`<结果数据>/e2e_diag_temp01.json`、`e2e_diag_final.json`）
 | 编号 | 结果 | 修复后 SQL 要点 |
 | --- | --- | --- |
 | B2007 | 1/1 ✓ | 子问题 2/3 仍正确判为无 SQL |
@@ -168,7 +168,7 @@ WHERE stock_abbr LIKE '%云南白药%' AND (...)
 
 **结果：9/9 编号级全部通过，语句级 9/9 SQL 在 MySQL 编译执行通过。**
 - 稳定性抽查：B2049 连跑 4/4 通过（单表优先规则生效后）；B2049/B2053/B2075 重跑全部通过。
-- 说明：Dify 工作流通过更新已发布 graph 生效（备份：`训练结果数据/dify_graph_published_backup.json`、`dify_graph_backup_v2.json`）；如需在 Dify UI 同步，可重新导入 `database/任务二 (4).yml` 并发布。
+- 说明：Dify 工作流通过更新已发布 graph 生效（备份：`<结果数据>/dify_graph_published_backup.json`、`dify_graph_backup_v2.json`）；如需在 Dify UI 同步，可重新导入 `database/任务二 (4).yml` 并发布。
 
 ## 八、工程化拦截：SQL 字段-表归属校验器（2026-08-17 落地）
 
@@ -202,7 +202,7 @@ WHERE stock_abbr LIKE '%云南白药%' AND (...)
 | 别名未定义（SELECT 引用 t1） | B2053 | ✓ 通过（三表 JOIN 别名一致） |
 | 未定义表（JOIN stock_info） | B2075 | ✓ 通过（单表无 JOIN） |
 
-- 数据：`训练结果数据/sql_guard_results.json`、`sql_guard_repair_demo.json`（不入 git）
+- 数据：`<结果数据>/sql_guard_results.json`、`sql_guard_repair_demo.json`（不入 git）
 
 ## 九、全量 80 题回归新增 badcase（2026-08-18）
 

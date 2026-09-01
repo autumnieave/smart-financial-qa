@@ -70,10 +70,10 @@ docker compose down -v                     # 停止并清理数据卷（慎用�
 
 说明：
 
-- 后端镜像通过 `.dockerignore` 排除大数据目录（`测试数据/`、`qdrant_storage/` 等），仅打包源码；
+- 后端镜像通过 `.dockerignore` 排除大数据目录（`<数据目录>/`、`qdrant_storage/` 等），仅打包源码；
 - `./database` 以卷挂载：SQLite 会话记忆与 BM25 索引缓存在容器外持久化；`./result` 挂载图表输出；
 - 环境变量在 `.env` 中维护，compose 以 `${VAR:-default}` 注入；
-- 若宿主机已有 Qdrant 数据（`qdrant_storage/`），首次启动前可先在本地执行 `python rag_全流程构建.py --build` 预构建，再把 `qdrant_storage/` 一并交给容器（或直接在容器内 build，注意 `测试数据/` 未入镜像，需另挂载）。
+- 若宿主机已有 Qdrant 数据（`qdrant_storage/`），首次启动前可先在本地执行 `python rag_全流程构建.py --build` 预构建，再把 `qdrant_storage/` 一并交给容器（或直接在容器内 build，注意 `<数据目录>/` 未入镜像，需另挂载）。
 
 ## 5. 环境变量清单
 
@@ -93,7 +93,7 @@ docker compose down -v                     # 停止并清理数据卷（慎用�
 | `MEMORY_REDIS_URL` | `redis://localhost:6379/0` | redis 后端连接串 |
 | `HYBRID_ENABLED` | `true` | 混合检索（向量 + BM25 + RRF 融合）默认开关 |
 | `BM25_INDEX_PATH` | `database/bm25_index.pkl` | BM25 缓存路径（按 集合名+点数 自动重建） |
-| `CITATION_CORPUS_ROOT` | `B题数据及提交说明/全部数据/正式数据/附件5：研报数据` | L1 引用核验语料根目录（正式数据全量 473 篇） |
+| `CITATION_CORPUS_ROOT` | `<数据根目录>/全部数据/正式数据/附件5：研报数据` | L1 引用核验语料根目录（正式数据全量 473 篇） |
 | `CITATION_MATCH_MODE` | `comma` | 引用数字匹配口径（raw / comma / loose） |
 | `AGENT_PLANNER_BACKEND` | `handwritten` | Agent 规划器后端：`handwritten`（自研，默认）/ `langgraph`（实验对照） |
 | `AGENT_ENABLE_THINKING` | `false` | Agent 循环思考模式（推理模型默认关闭，避免耗尽 max_tokens） |
@@ -107,12 +107,12 @@ docker compose down -v                     # 停止并清理数据卷（慎用�
 | 现象 | 原因 / 处理 |
 | --- | --- |
 | 启动报 Qdrant 连接失败 | 先 `docker compose up -d qdrant`；或改 `QDRANT_HOST/PORT` 指向已有服务 |
-| `--build/--rebuild` 找不到研报目录 | `MARKDOWN_DIR` 等路径默认指向 `测试数据/`，确认该目录在宿主机存在且 `.env` 未覆盖错误 |
+| `--build/--rebuild` 找不到研报目录 | `MARKDOWN_DIR` 等路径默认指向 `<数据目录>/`，确认该目录在宿主机存在且 `.env` 未覆盖错误 |
 | Agent 财务查询报"MySQL schema/连接加载失败" | MySQL 未启动或 `MYSQL_*` 配置错误；普通 RAG 不受影响 |
 | 回答为空 / 极短 | `LLM_MODEL` 为推理模型时必须关闭思考（代码已带 `enable_thinking: False`）；或检查 `MAX_TOKENS` |
 | `MEMORY_BACKEND=redis` 连不上 | 确认 Redis 已启动（compose 含 redis 服务），或改回 `sqlite` |
 | 前端访问 API 404 | 前端经 Nginx 反代 `/api` 到 backend；本地联调时确认 `VITE_API_URL` 与后端端口一致 |
-| Docker 构建包含大文件 | `.dockerignore` 已排除 `测试数据/ qdrant_storage/ .venv/` 等；如仍异常检查 `.dockerignore` 是否被改动 |
+| Docker 构建包含大文件 | `.dockerignore` 已排除 `<数据目录>/ qdrant_storage/ .venv/` 等；如仍异常检查 `.dockerignore` 是否被改动 |
 | Windows 控制台中文乱码 | 使用 `python -X utf8` 或确保终端为 UTF-8；CLI 已对 stdout 做 UTF-8 reconfigure |
 
 ## 7. 数据与持久化
