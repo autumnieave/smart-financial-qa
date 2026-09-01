@@ -1,0 +1,90 @@
+/* ============ 全局 ============ */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 8px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.app-bg {
+  background: linear-gradient(180deg, #f8fafc 0%, #eef2f7 100%);
+}
+
+/* ============ Markdown 内容 ============ */
+.prose table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.prose pre {
+  max-width: 100%;
+  overflow-x: auto;
+  border-radius: 8px;
+}
+
+.prose img {
+  max-width: 100%;
+  border-radius: 8px;
+}
+
+.prose blockquote {
+  border-left: 3px solid #93c5fd;
+  background: #f8fafc;
+  padding: 4px 12px;
+  border-radius: 0 8px 8px 0;
+  color: #475569;
+}
+
+/* 引用展开区域的细节样式 */
+details summary {
+  list-style: none;
+}
+
+details summary::-webkit-details-marker {
+  display: none;
+}
+
+details summary::before {
+  content: '▸ ';
+}
+
+details[open] summary::before {
+  content: '▾ ';
+}
+
+/* ============ 打字指示动画 ============ */
+.typing-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  animation: typing-bounce 1.2s infinite ease-in-out;
+}
+
+@keyframes typing-bounce {
+  0%, 60%, 100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  30% {
+    transform: translateY(-4px);
+    opacity: 1;
+  }
+}

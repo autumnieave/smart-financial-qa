@@ -1,0 +1,781 @@
+import React, { useState, useRef, useEffect } from 'react';
+import './App.css';
+import ChartView from './ChartView';
+import Markdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import rehypeHighlight from 'rehype-highlight';
+import 'highlight.js/styles/github.css'; // 代码高亮样式
+
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const STORAGE_KEY = 'chatHistory';
+const SESSIONS_KEY = 'chatSessionsV2';
+const MAX_SESSIONS = 5;
+
+// 会话工具：每个会话独立 id / user_id（隔离后端记忆），最多 MAX_SESSIONS 个
+const genId = () => 's-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+const makeSession = (messages = []) => {
+  const id = genId();
+  const firstUser = (messages || []).find(m => m.role === 'user');
+  return {
+    id,
+    title: (firstUser?.content || '新对话').slice(0, 18),
+    userId: 'session-' + id,
+    messages: messages || [],
+  };
+};
+
+// 图片路径归一化：后端返回 /result/xxx（相对）或 http(s) 直链
+const resolveImageUrl = (url) => {
+  if (!url) return '';
+  return url.startsWith('http') ? url : `${API_URL}${url}`;
+};
+
+// 从 Windows/Linux 路径中取文件名
+const basename = (p) => {
+  if (!p) return '';
+  const parts = String(p).split(/[\\/]+/).filter(Boolean);
+  return parts[parts.length - 1] || p;
+};
+
+const formatTime = (ts) => {
+  if (!ts) return '';
+  try {
+    return new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+  } catch {
+    return '';
+  }
+};
+
+// 模式定义
+const MODES = [
+  { key: 'rag', label: 'RAG 问答', desc: '问观点和原因 · 基于研报回答，引用可溯源', placeholder: '问研报里的观点、原因和趋势，如「药明康德2024年研报主要观点？」', active: 'bg-blue-500', badge: 'bg-blue-100 text-blue-600' },
+  { key: 'agent', label: 'Agent 分析', desc: '查数字和对比 · 查财务数据库并生成图表，也支持研报', placeholder: '查财务数字、做对比分析，如「对比东阿阿胶与云南白药的盈利能力」', active: 'bg-green-500', badge: 'bg-green-100 text-green-600' },
+  { key: 'clarify', label: '多轮澄清', desc: '缺条件反问 · 逐步补全', placeholder: '描述你想查的指标，如「它的ROE变化趋势如何」', active: 'bg-purple-500', badge: 'bg-purple-100 text-purple-600' },
+];
+
+// 后端 Agent 阶段事件 → 前端提示文案
+const STAGE_COPY = {
+  parse: '正在分析问题…',
+  thinking: '正在思考下一步…',
+  search_reports: '正在检索研报内容…',
+  query_financial: '正在查询财务数据并生成图表（约 1-2 分钟）…',
+  generate: '正在生成答案…',
+};
+
+// 各模式推荐问题（点击即发送）
+const SUGGESTIONS = {
+  rag: [
+    { icon: '📈', q: '万邦德2023年营业收入是多少？' },
+    { icon: '📑', q: '药明康德2024年研报主要观点是什么？' },
+    { icon: '📊', q: '云南白药近三年净利润趋势如何？' },
+  ],
+  agent: [
+    { icon: '🧮', q: '分析万邦德2023年营收结构并生成图表' },
+    { icon: '⚖️', q: '对比东阿阿胶与云南白药的盈利能力' },
+  ],
+  clarify: [
+    { icon: '💬', q: '帮我看看最近业绩怎么样' },
+    { icon: '🔁', q: '它的ROE变化趋势如何' },
+  ],
+};
+
+// 引用核验状态徽章
+const CitationBadge = ({ citation }) => {
+  if (!citation) return null;
+  const map = {
+    exact: ['bg-green-100 text-green-700', '文件可溯源'],
+    fuzzy: ['bg-yellow-100 text-yellow-700', '模糊匹配'],
+    missing: ['bg-red-100 text-red-700', '文件缺失'],
+  };
+  const [cls, label] = map[citation.status] || ['bg-gray-100 text-gray-600', citation.status || '未知'];
+  const unhit = citation.unhit || [];
+  return (
+    <span className={`inline-block px-1.5 py-0.5 rounded text-[11px] font-medium whitespace-nowrap ${cls}`}>
+      {label}
+      {citation.nums > 0 && ` · 数字 ${citation.num_hit}/${citation.nums}`}
+      {unhit.length > 0 && ` · ${unhit.length} 个未命中`}
+    </span>
+  );
+};
+
+// 从 localStorage 读取会话列表（优先新格式，兼容旧版单会话历史）
+const loadSessions = () => {
+  try {
+    const stored = localStorage.getItem(SESSIONS_KEY);
+    if (stored) {
+      const parsed = JSON.parse(stored);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed
+          .filter(s => s && Array.isArray(s.messages))
+          .map(s => ({ ...s, messages: (s.messages || []).filter(m => !m.isStreaming) }))
+          .slice(-MAX_SESSIONS);
+      }
+    }
+    const legacy = localStorage.getItem(STORAGE_KEY);
+    if (legacy) {
+      const parsed = JSON.parse(legacy);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return [makeSession(parsed.filter(m => !m.isStreaming))];
+      }
+    }
+  } catch (e) {
+    console.warn('读取会话失败:', e);
+  }
+  return [makeSession()];
+};
+
+// 保存会话列表到 localStorage（每会话最多 50 条）
+const saveSessions = (sessions) => {
+  try {
+    const toStore = sessions.map(s => ({
+      ...s,
+      messages: (s.messages || []).filter(m => !m.isStreaming).slice(-50),
+    }));
+    localStorage.setItem(SESSIONS_KEY, JSON.stringify(toStore));
+  } catch (e) {
+    console.warn('保存会话失败:', e);
+  }
+};
+
+// 带重试和超时的 fetch 封装
+const fetchWithRetry = async (url, options, maxRetries = 2, timeoutMs = 60000) => {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  options.signal = controller.signal;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await fetch(url, options);
+      clearTimeout(timeoutId);
+
+      // 5xx 服务端错误，且还有重试机会，则指数退避后重试
+      if (response.status >= 500 && attempt < maxRetries) {
+        const delay = 1000 * (attempt + 1);
+        console.warn(`请求失败 (${response.status})，${delay / 1000}秒后重试... (尝试 ${attempt + 1}/${maxRetries})`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      }
+      return response;
+    } catch (error) {
+      clearTimeout(timeoutId);
+      if (attempt < maxRetries) {
+        const delay = 1000 * (attempt + 1);
+        console.warn(`请求异常 (${error.message})，${delay / 1000}秒后重试...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw new Error('请求失败，已重试 ' + maxRetries + ' 次');
+};
+
+function App() {
+  const [sessions, setSessions] = useState(loadSessions);
+  const [activeId, setActiveId] = useState(null);
+  const [input, setInput] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  const [mode, setMode] = useState('rag'); // 'rag' | 'agent' | 'clarify'
+  const [stage, setStage] = useState(null); // 后端阶段事件（agent 等待期反馈）
+  const [health, setHealth] = useState({ status: 'checking', collection: '' });
+  const [copiedId, setCopiedId] = useState(null);
+  const [previewImage, setPreviewImage] = useState(null);
+  const [confirmClear, setConfirmClear] = useState(false);
+  const [sessionHint, setSessionHint] = useState(false);
+  const messagesEndRef = useRef(null);
+  const taRef = useRef(null);
+  const abortRef = useRef(null);
+
+  const activeSession = sessions.find(s => s.id === activeId) || sessions[0] || null;
+  const messages = activeSession?.messages || [];
+
+  // 会话级更新工具：消息只存在于当前会话（列表为唯一数据源）
+  const patchActiveMessages = (fn) => {
+    setSessions(prev => {
+      const target = prev.find(s => s.id === activeId) || prev[0];
+      if (!target) return prev;
+      return prev.map(s => (s.id === target.id ? { ...s, messages: fn(s.messages || []) } : s));
+    });
+  };
+  const appendMessages = (...newMsgs) => patchActiveMessages(msgs => [...msgs, ...newMsgs]);
+  const updateMessage = (id, patch) => patchActiveMessages(msgs => msgs.map(m => (m.id === id ? { ...m, ...patch } : m)));
+
+  // 后端健康检查（每 15 秒轮询）
+  useEffect(() => {
+    let cancelled = false;
+    const check = async () => {
+      try {
+        const res = await fetch(`${API_URL}/health`);
+        const data = await res.json();
+        if (!cancelled) setHealth({ status: 'ok', collection: data.collection || '' });
+      } catch (e) {
+        if (!cancelled) setHealth({ status: 'down', collection: '' });
+      }
+    };
+    check();
+    const timer = setInterval(check, 15000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, []);
+
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages]);
+
+  // 自动持久化会话列表到 localStorage
+  useEffect(() => {
+    saveSessions(sessions);
+  }, [sessions]);
+
+  // 输入框自动增高（最高 160px）
+  useEffect(() => {
+    const ta = taRef.current;
+    if (!ta) return;
+    ta.style.height = 'auto';
+    ta.style.height = Math.min(ta.scrollHeight, 160) + 'px';
+  }, [input]);
+
+  const copyText = async (id, text) => {
+    try {
+      let ok = false;
+      if (navigator.clipboard && window.isSecureContext) {
+        try {
+          await navigator.clipboard.writeText(text);
+          ok = true;
+        } catch (e) {
+          ok = false;
+        }
+      }
+      if (!ok) {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        ta.style.top = '0';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+      }
+      if (ok) {
+        setCopiedId(id);
+        setTimeout(() => setCopiedId(null), 1500);
+      } else {
+        console.warn('复制失败: 浏览器未授权剪贴板');
+      }
+    } catch (e) {
+      console.warn('复制失败:', e);
+    }
+  };
+
+  const newSession = () => {
+    if (isLoading) return;
+    if (sessions.length >= MAX_SESSIONS) {
+      setSessionHint(true);
+      setTimeout(() => setSessionHint(false), 2000);
+      return;
+    }
+    const s = makeSession();
+    setSessions(prev => [...prev, s]);
+    setActiveId(s.id);
+    setInput('');
+    setStage(null);
+  };
+
+  const deleteSession = (id) => {
+    if (isLoading) return;
+    setSessions(prev => {
+      const next = prev.filter(s => s.id !== id);
+      return next.length ? next : [makeSession()];
+    });
+    if (id === activeId) setActiveId(null);
+    setStage(null);
+  };
+
+  const stopGeneration = () => {
+    abortRef.current?.abort();
+  };
+
+  const sendMessage = async (textOverride) => {
+    const question = (textOverride ?? input).trim();
+    if (!question || isLoading) return;
+
+    const userMsg = { id: `u-${Date.now()}`, role: 'user', content: question, ts: Date.now() };
+    const aiMsgId = `a-${Date.now()}`;
+    const aiMsg = {
+      role: 'assistant',
+      content: '',
+      image: [],
+      references: [],
+      chart_json: null,
+      id: aiMsgId,
+      ts: Date.now(),
+      isStreaming: true,
+    };
+    appendMessages(userMsg, aiMsg);
+    // 会话标题取首问
+    if (activeSession && activeSession.title === '新对话') {
+      setSessions(prev => prev.map(s => (s.id === activeSession.id ? { ...s, title: question.slice(0, 18) } : s)));
+    }
+    setInput('');
+    setIsLoading(true);
+    setStage(null);
+
+    // 多轮澄清模式：非流式接口（RAG 聚合+生成较慢，超时放宽到 150s）
+    if (mode === 'clarify') {
+      try {
+        const res = await fetchWithRetry(`${API_URL}/chat/clarify`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ input: question, user_id: activeSession?.userId || 'default' }),
+        }, 1, 150000);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+        updateMessage(aiMsgId, {
+          content: data.content || '（无回复）',
+          image: data.image || [],
+          references: data.references || [],
+          chart_json: data.chart_json || null,
+          isStreaming: false,
+          clarifyDone: data.clarify_done,
+        });
+      } catch (error) {
+        console.error('澄清请求失败:', error);
+        updateMessage(aiMsgId, { content: '❌ 请求失败，请检查后端服务是否启动', isStreaming: false, error: true, question });
+      }
+      setIsLoading(false);
+      return;
+    }
+
+    // RAG / Agent 模式：SSE 流式（支持中途停止）
+    const controller = new AbortController();
+    abortRef.current = controller;
+    try {
+      const response = await fetch(`${API_URL}/chat/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question, mode, user_id: activeSession?.userId || 'default' }),
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        let detail = `HTTP ${response.status}`;
+        try { const d = await response.json(); detail = d.detail || detail; } catch { /* 忽略 */ }
+        throw new Error(detail);
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let fullContent = '';
+      let image = [];
+      let references = [];
+      let chartJson = null;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = chunk.split('\n');
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const data = line.slice(6);
+          if (data === '[DONE]') continue;
+
+          try {
+            const parsed = JSON.parse(data);
+            if (parsed.type === 'meta') {
+              image = parsed.image || [];
+              references = parsed.references || [];
+              if (parsed.chart_json) chartJson = parsed.chart_json;
+            } else if (parsed.type === 'stage') {
+              setStage(parsed.stage);
+            } else if (parsed.type === 'final') {
+              // 混合题：研报草稿流式结束后，最终汇总答案以 final 事件重置后重发
+              fullContent = '';
+            } else if (parsed.type === 'content') {
+              fullContent += parsed.text;
+              updateMessage(aiMsgId, { content: fullContent, image, references, chart_json: chartJson });
+            } else if (parsed.type === 'done') {
+              setStage(null);
+              updateMessage(aiMsgId, { content: fullContent, image, references, chart_json: chartJson, isStreaming: false });
+            } else if (parsed.type === 'error') {
+              setStage(null);
+              updateMessage(aiMsgId, { content: `❌ ${parsed.message || '生成出错'}`, isStreaming: false, error: true });
+            }
+          } catch (e) {
+            // 忽略解析错误
+          }
+        }
+      }
+    } catch (error) {
+      if (error.name === 'AbortError') {
+        // 用户点击「停止」中断
+        updateMessage(aiMsgId, { content: '⏹ 已停止生成', isStreaming: false, stopped: true });
+      } else {
+        console.error('请求失败:', error);
+        updateMessage(aiMsgId, { content: '❌ 请求失败，请检查后端服务是否启动', isStreaming: false, error: true, question });
+      }
+    } finally {
+      abortRef.current = null;
+      setIsLoading(false);
+      setStage(null);
+    }
+  };
+
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  };
+
+  const clearHistory = () => {
+    if (!confirmClear) {
+      setConfirmClear(true);
+      setTimeout(() => setConfirmClear(false), 2500);
+      return;
+    }
+    patchActiveMessages(() => []);
+    setConfirmClear(false);
+  };
+
+  // 渲染图片（点击放大）
+  const renderImages = (msg) => {
+    if (!msg.image || msg.image.length === 0) return null;
+    return (
+      <div className="mt-3 grid gap-2">
+        {msg.image.map((img, idx) => (
+          <img
+            key={idx}
+            src={resolveImageUrl(img)}
+            alt="图表"
+            className="max-w-full rounded-lg border border-gray-200 cursor-zoom-in hover:opacity-90 transition-opacity"
+            onClick={() => setPreviewImage(resolveImageUrl(img))}
+          />
+        ))}
+      </div>
+    );
+  };
+
+  // 渲染引用（可展开原文）
+  const renderReferences = (msg) => {
+    if (!msg.references || msg.references.length === 0) return null;
+    return (
+      <div className="mt-3 space-y-1.5">
+        <div className="font-medium text-gray-600 text-sm">📚 参考来源（{msg.references.length}）</div>
+        {msg.references.map((ref, idx) => {
+          const citation = ref.citation;
+          const unhit = citation?.unhit || [];
+          return (
+            <div key={idx} className="border border-gray-200 rounded-lg p-2 bg-gray-50/60">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-gray-700 text-xs font-medium truncate" title={ref.paper_path || ''}>
+                  {idx + 1}. {basename(ref.paper_path) || '未知来源'}
+                </span>
+                <CitationBadge citation={citation} />
+              </div>
+              {ref.paper_image && (
+                <div className="text-[11px] text-gray-400 truncate mt-1">📊 {basename(ref.paper_image)}</div>
+              )}
+              {citation && citation.nums > 0 && (
+                <details className="mt-1">
+                  <summary className="text-[11px] text-gray-400 cursor-pointer hover:text-gray-600 select-none">数字核验明细</summary>
+                  <div className="text-[11px] text-gray-500 mt-1 space-y-0.5 bg-white/70 rounded p-1.5">
+                    <div>
+                      数字命中：
+                      <span className={unhit.length > 0 ? 'text-orange-600 font-medium' : 'text-green-600 font-medium'}>
+                        {citation.num_hit}/{citation.nums}
+                      </span>
+                    </div>
+                    {unhit.length > 0 && (
+                      <div>未命中数字：<span className="text-red-600">{unhit.join('、')}</span></div>
+                    )}
+                    {unhit.length === 0 && <div className="text-green-600">✓ 全部命中</div>}
+                    {citation.located && <div className="truncate">定位文件：{basename(citation.located)}</div>}
+                  </div>
+                </details>
+              )}
+              {ref.text && (
+                <details className="mt-1">
+                  <summary className="text-[11px] text-gray-400 cursor-pointer hover:text-gray-600 select-none">查看原文</summary>
+                  <div className="text-[11px] text-gray-500 mt-1 whitespace-pre-wrap max-h-28 overflow-y-auto">{ref.text}</div>
+                </details>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
+  // 渲染单条消息内容
+  const renderMessage = (msg) => {
+    if (msg.role === 'user') {
+      return <div className="whitespace-pre-wrap break-words">{msg.content}</div>;
+    }
+
+    return (
+      <div className="space-y-2">
+        <div className="prose prose-sm max-w-none">
+          <Markdown
+            remarkPlugins={[remarkGfm]}
+            rehypePlugins={[rehypeHighlight]}
+          >
+            {msg.content}
+          </Markdown>
+        </div>
+
+        {renderImages(msg)}
+        {msg.chart_json ? <ChartView option={msg.chart_json} /> : null}
+        {renderReferences(msg)}
+
+        {msg.isStreaming && !msg.content && stage && (
+          <div className="flex items-center gap-2 mt-1 text-sm text-gray-500">
+            <span className="inline-block w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+            <span>{STAGE_COPY[stage] || '正在处理…'}</span>
+          </div>
+        )}
+
+        {msg.isStreaming && msg.content && (
+          <span className="inline-flex items-center gap-1 mt-1">
+            <span className="typing-dot bg-blue-500" />
+            <span className="typing-dot bg-blue-500" style={{ animationDelay: '0.15s' }} />
+            <span className="typing-dot bg-blue-500" style={{ animationDelay: '0.3s' }} />
+          </span>
+        )}
+      </div>
+    );
+  };
+
+  const currentMode = MODES.find(m => m.key === mode) || MODES[0];
+  const healthDot = health.status === 'ok' ? 'bg-green-500' : health.status === 'down' ? 'bg-red-500' : 'bg-gray-400 animate-pulse';
+
+  return (
+    <div className="app-bg flex h-screen">
+      {/* 会话侧边栏（最多 5 个，独立 user_id 隔离后端记忆） */}
+      <aside className="w-60 shrink-0 border-r border-gray-200/70 bg-white/70 backdrop-blur flex flex-col">
+        <div className="p-3 border-b border-gray-200/60 flex items-center justify-between gap-2">
+          <span className="text-sm font-semibold text-gray-700">会话</span>
+          <button
+            onClick={newSession}
+            disabled={isLoading}
+            className="px-2 py-1 rounded-lg text-xs bg-blue-500 hover:bg-blue-600 text-white shadow-sm disabled:opacity-50"
+            title="新建会话（最多 5 个）"
+          >
+            ＋ 新对话
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-2 space-y-1">
+          {sessions.map(s => (
+            <div
+              key={s.id}
+              onClick={() => { setActiveId(s.id); setStage(null); }}
+              className={`group flex items-center gap-1 rounded-lg px-2 py-1.5 cursor-pointer ${s.id === (activeSession?.id) ? 'bg-blue-50 text-blue-700' : 'text-gray-600 hover:bg-gray-100'} ${isLoading ? 'pointer-events-none opacity-60' : ''}`}
+              title={`${s.messages.length} 条消息`}
+            >
+              <span className="flex-1 truncate text-xs">💬 {s.title}</span>
+              <button
+                onClick={(e) => { e.stopPropagation(); deleteSession(s.id); }}
+                className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-500 text-xs px-1"
+                title="删除会话"
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
+        <div className="p-2 text-[10px] text-gray-400 border-t border-gray-200/60">
+          {sessions.length}/{MAX_SESSIONS} 个会话
+          {sessionHint && <span className="text-orange-500"> · 最多 {MAX_SESSIONS} 个</span>}
+        </div>
+      </aside>
+
+      <div className="flex flex-col flex-1 min-w-0 max-w-4xl mx-auto w-full px-4">
+        {/* 头部 */}
+        <header className="flex items-center justify-between py-3 border-b border-gray-200/70 gap-3 shrink-0">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-blue-500 to-indigo-500 flex items-center justify-center text-lg shadow-sm shrink-0">📊</div>
+            <div className="min-w-0">
+              <h1 className="text-lg font-bold text-gray-800 leading-tight">智能问数助手</h1>
+              <div className="flex items-center gap-1.5 text-xs text-gray-500" title={health.collection ? `向量集合: ${health.collection}` : ''}>
+                <span className={`inline-block w-1.5 h-1.5 rounded-full ${healthDot}`} />
+                {health.status === 'ok' ? '后端在线' : health.status === 'down' ? '后端离线' : '连接中…'}
+              </div>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1 p-1 rounded-xl bg-gray-100">
+              {MODES.map(m => (
+                <button
+                  key={m.key}
+                  onClick={() => setMode(m.key)}
+                  className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${
+                    mode === m.key ? `${m.active} text-white shadow-sm` : 'text-gray-600 hover:bg-white/70'
+                  }`}
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
+            <button
+              onClick={clearHistory}
+              className={`px-2.5 py-1.5 rounded-lg text-xs border transition-colors ${
+                confirmClear ? 'bg-red-500 text-white border-red-500' : 'text-gray-500 border-gray-300 hover:bg-gray-100'
+              }`}
+              title="清空当前会话"
+            >
+              {confirmClear ? '确认清空？' : '🗑 清空'}
+            </button>
+          </div>
+        </header>
+
+        {/* 模式说明条 */}
+        <div className="flex items-center justify-between pt-2 text-xs text-gray-400 shrink-0">
+          <span className={`px-2 py-0.5 rounded-md ${currentMode.badge}`}>{currentMode.label}：{currentMode.desc}</span>
+          {messages.length > 0 && <span>共 {messages.length} 条消息</span>}
+        </div>
+        {mode === 'agent' && (
+          <div className="text-[11px] text-gray-400 pt-1 shrink-0">💡 拿不准就选 Agent：既能查研报观点，也能查财务数字并出图表。</div>
+        )}
+
+        {/* 消息列表 */}
+        <div className="flex-1 overflow-y-auto py-4 space-y-4">
+          {messages.length === 0 && (
+            <div className="flex flex-col items-center justify-center h-full text-center px-4">
+              <div className="text-6xl mb-4">💬</div>
+              <p className="text-gray-500 text-base">你好，我是智能问数助手</p>
+              <p className="text-sm text-gray-400 mt-1 mb-6">{currentMode.label}模式 · {currentMode.desc}</p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 w-full max-w-lg">
+                {(SUGGESTIONS[mode] || []).map((s, idx) => (
+                  <button
+                    key={idx}
+                    onClick={() => sendMessage(s.q)}
+                    disabled={isLoading}
+                    className="text-left px-3 py-2.5 rounded-xl border border-gray-200 bg-white/80 hover:border-blue-300 hover:shadow-sm transition-all text-sm text-gray-600 flex items-center gap-2 disabled:opacity-50"
+                  >
+                    <span>{s.icon}</span>
+                    <span className="truncate">{s.q}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {messages.map((msg, idx) => (
+            <div key={msg.id || idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+              <div className={`flex gap-2 max-w-[82%] ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}>
+                {/* 头像 */}
+                <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm shrink-0 mt-1 ${
+                  msg.role === 'user' ? 'bg-blue-100' : 'bg-indigo-100'
+                }`}>
+                  {msg.role === 'user' ? '🧑‍💻' : '🤖'}
+                </div>
+                <div className="min-w-0">
+                  <div className={`rounded-2xl px-4 py-3 ${
+                    msg.role === 'user'
+                      ? 'bg-blue-500 text-white'
+                      : 'bg-white border border-gray-200 shadow-sm text-gray-800'
+                  }`}>
+                    {renderMessage(msg)}
+                  </div>
+
+                  {/* 消息操作栏 */}
+                  {msg.role === 'user' ? (
+                    <div className="flex justify-end mt-1 pr-1">
+                      <span className="text-[10px] text-gray-400">{formatTime(msg.ts)}</span>
+                    </div>
+                  ) : (
+                    !msg.isStreaming && (
+                      <div className="flex items-center gap-2 mt-1 px-1">
+                        <span className="text-[10px] text-gray-400">{formatTime(msg.ts)}</span>
+                        <button
+                          onClick={() => copyText(msg.id, msg.content)}
+                          className="text-[11px] text-gray-400 hover:text-gray-600"
+                          title="复制回答"
+                        >
+                          {copiedId === msg.id ? '✓ 已复制' : '📋 复制'}
+                        </button>
+                        {msg.error && msg.question && (
+                          <button
+                            onClick={() => sendMessage(msg.question)}
+                            className="text-[11px] text-blue-500 hover:text-blue-600"
+                          >
+                            🔄 重试
+                          </button>
+                        )}
+                      </div>
+                    )
+                  )}
+                </div>
+              </div>
+            </div>
+          ))}
+          <div ref={messagesEndRef} />
+        </div>
+
+        {/* 输入区 */}
+        <div className="border-t border-gray-200/70 pt-3 pb-3 shrink-0">
+          <div className="flex gap-3 items-end">
+            <textarea
+              ref={taRef}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder={currentMode.placeholder || '输入问题...（Enter发送，Shift+Enter换行）'}
+              className="flex-1 resize-none rounded-xl border border-gray-300 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+              rows={1}
+            />
+            {isLoading ? (
+              <button
+                onClick={stopGeneration}
+                className="px-6 py-2.5 rounded-xl font-medium bg-red-500 hover:bg-red-600 text-white text-sm shrink-0"
+              >
+                ⏹ 停止
+              </button>
+            ) : (
+              <button
+                onClick={() => sendMessage()}
+                disabled={!input.trim()}
+                className={`px-6 py-2.5 rounded-xl font-medium text-sm shrink-0 transition-colors ${
+                  !input.trim()
+                    ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                    : 'bg-blue-500 hover:bg-blue-600 text-white shadow-sm'
+                }`}
+              >
+                发送
+              </button>
+            )}
+          </div>
+          <div className="text-[11px] text-gray-400 mt-1.5 px-1">
+            {isLoading
+              ? ((stage ? (STAGE_COPY[stage] || '正在处理…') : '正在生成') + '，点击「停止」可中断…')
+              : (currentMode.label + '：' + currentMode.desc + (mode === 'agent' ? ' · 拿不准就选 Agent' : ''))}
+          </div>
+        </div>
+      </div>
+
+      {/* 图片预览弹窗 */}
+      {previewImage && (
+        <div
+          className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4"
+          onClick={() => setPreviewImage(null)}
+        >
+          <img src={previewImage} alt="预览" className="max-w-full max-h-full rounded-lg shadow-2xl" />
+          <button
+            className="absolute top-4 right-4 w-9 h-9 rounded-full bg-white/20 hover:bg-white/40 text-white text-lg"
+            onClick={() => setPreviewImage(null)}
+          >
+            ✕
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default App;
