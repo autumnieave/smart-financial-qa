@@ -48,9 +48,7 @@ const formatTime = (ts) => {
 
 // 模式定义
 const MODES = [
-  { key: 'rag', label: 'RAG 问答', desc: '问观点和原因 · 基于研报回答，引用可溯源', placeholder: '问研报里的观点、原因和趋势，如「药明康德2024年研报主要观点？」', active: 'bg-blue-500', badge: 'bg-blue-100 text-blue-600' },
   { key: 'agent', label: 'Agent 分析', desc: '查数字和对比 · 查财务数据库并生成图表，也支持研报', placeholder: '查财务数字、做对比分析，如「对比东阿阿胶与云南白药的盈利能力」', active: 'bg-green-500', badge: 'bg-green-100 text-green-600' },
-  { key: 'clarify', label: '多轮澄清', desc: '缺条件反问 · 逐步补全', placeholder: '描述你想查的指标，如「它的ROE变化趋势如何」', active: 'bg-purple-500', badge: 'bg-purple-100 text-purple-600' },
 ];
 
 // 后端 Agent 阶段事件 → 前端提示文案
@@ -64,18 +62,11 @@ const STAGE_COPY = {
 
 // 各模式推荐问题（点击即发送）
 const SUGGESTIONS = {
-  rag: [
-    { icon: '📈', q: '万邦德2023年营业收入是多少？' },
-    { icon: '📑', q: '药明康德2024年研报主要观点是什么？' },
-    { icon: '📊', q: '云南白药近三年净利润趋势如何？' },
-  ],
   agent: [
-    { icon: '🧮', q: '分析万邦德2023年营收结构并生成图表' },
+    { icon: '📊', q: '分析万邦德2023年营收结构并生成图表' },
     { icon: '⚖️', q: '对比东阿阿胶与云南白药的盈利能力' },
-  ],
-  clarify: [
-    { icon: '💬', q: '帮我看看最近业绩怎么样' },
-    { icon: '🔁', q: '它的ROE变化趋势如何' },
+    { icon: '📄', q: '药明康德2024年研报主要观点是什么？' },
+    { icon: '📈', q: '云南白药近三年净利润趋势如何？' },
   ],
 };
 
@@ -137,45 +128,13 @@ const saveSessions = (sessions) => {
   }
 };
 
-// 带重试和超时的 fetch 封装
-const fetchWithRetry = async (url, options, maxRetries = 2, timeoutMs = 60000) => {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-  options.signal = controller.signal;
-
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      const response = await fetch(url, options);
-      clearTimeout(timeoutId);
-
-      // 5xx 服务端错误，且还有重试机会，则指数退避后重试
-      if (response.status >= 500 && attempt < maxRetries) {
-        const delay = 1000 * (attempt + 1);
-        console.warn(`请求失败 (${response.status})，${delay / 1000}秒后重试... (尝试 ${attempt + 1}/${maxRetries})`);
-        await new Promise(resolve => setTimeout(resolve, delay));
-        continue;
-      }
-      return response;
-    } catch (error) {
-      clearTimeout(timeoutId);
-      if (attempt < maxRetries) {
-        const delay = 1000 * (attempt + 1);
-        console.warn(`请求异常 (${error.message})，${delay / 1000}秒后重试...`);
-        await new Promise(resolve => setTimeout(resolve, delay));
-        continue;
-      }
-      throw error;
-    }
-  }
-  throw new Error('请求失败，已重试 ' + maxRetries + ' 次');
-};
 
 function App() {
   const [sessions, setSessions] = useState(loadSessions);
   const [activeId, setActiveId] = useState(null);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [mode, setMode] = useState('rag'); // 'rag' | 'agent' | 'clarify'
+  const [mode] = useState('agent'); // 前端固定 Agent 模式；自研 RAG / 多轮澄清仅供 CLI 本地测试
   const [stage, setStage] = useState(null); // 后端阶段事件（agent 等待期反馈）
   const [health, setHealth] = useState({ status: 'checking', collection: '' });
   const [copiedId, setCopiedId] = useState(null);
@@ -325,33 +284,7 @@ function App() {
     setIsLoading(true);
     setStage(null);
 
-    // 多轮澄清模式：非流式接口（RAG 聚合+生成较慢，超时放宽到 150s）
-    if (mode === 'clarify') {
-      try {
-        const res = await fetchWithRetry(`${API_URL}/chat/clarify`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ input: question, user_id: activeSession?.userId || 'default' }),
-        }, 1, 150000);
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
-        updateMessage(aiMsgId, {
-          content: data.content || '（无回复）',
-          image: data.image || [],
-          references: data.references || [],
-          chart_json: data.chart_json || null,
-          isStreaming: false,
-          clarifyDone: data.clarify_done,
-        });
-      } catch (error) {
-        console.error('澄清请求失败:', error);
-        updateMessage(aiMsgId, { content: '❌ 请求失败，请检查后端服务是否启动', isStreaming: false, error: true, question });
-      }
-      setIsLoading(false);
-      return;
-    }
-
-    // RAG / Agent 模式：SSE 流式（支持中途停止）
+    // Agent 模式：SSE 流式（支持中途停止）（支持中途停止）
     const controller = new AbortController();
     abortRef.current = controller;
     try {
@@ -465,6 +398,19 @@ function App() {
   // 渲染引用（可展开原文）
   const renderReferences = (msg) => {
     if (!msg.references || msg.references.length === 0) return null;
+
+    // 高亮命中数字在原文上下文中的位置
+    const renderHitContext = (h) => {
+      const idx = (h.context || '').indexOf(h.num);
+      if (idx < 0) return h.context;
+      return (
+        <>
+          {h.context.slice(0, idx)}
+          <mark className="bg-yellow-100 text-green-700 font-semibold px-0.5 rounded">{h.num}</mark>
+          {h.context.slice(idx + h.num.length)}
+        </>
+      );
+    };
     return (
       <div className="mt-3 space-y-1.5">
         <div className="font-medium text-gray-600 text-sm">📚 参考来源（{msg.references.length}）</div>
@@ -504,6 +450,22 @@ function App() {
                 <details className="mt-1">
                   <summary className="text-[11px] text-gray-400 cursor-pointer hover:text-gray-600 select-none">查看原文</summary>
                   <div className="text-[11px] text-gray-500 mt-1 whitespace-pre-wrap max-h-28 overflow-y-auto">{ref.text}</div>
+                </details>
+              )}
+
+              {citation && citation.hits_context && citation.hits_context.length > 0 && (
+                <details className="mt-1">
+                  <summary className="text-[11px] text-gray-400 cursor-pointer hover:text-gray-600 select-none">
+                    数字命中位置（{citation.hits_context.length} 处 · 研报全文上下文）
+                  </summary>
+                  <div className="text-[11px] text-gray-500 mt-1 space-y-1 bg-white/70 rounded p-1.5 max-h-40 overflow-y-auto">
+                    {citation.hits_context.map((h, i) => (
+                      <div key={i} className="leading-relaxed">
+                        <span className="text-green-700 font-medium mr-1">#{h.num}</span>
+                        <span>…{renderHitContext(h)}…</span>
+                      </div>
+                    ))}
+                  </div>
                 </details>
               )}
             </div>
@@ -609,19 +571,6 @@ function App() {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <div className="flex items-center gap-1 p-1 rounded-xl bg-gray-100">
-              {MODES.map(m => (
-                <button
-                  key={m.key}
-                  onClick={() => setMode(m.key)}
-                  className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${
-                    mode === m.key ? `${m.active} text-white shadow-sm` : 'text-gray-600 hover:bg-white/70'
-                  }`}
-                >
-                  {m.label}
-                </button>
-              ))}
-            </div>
             <button
               onClick={clearHistory}
               className={`px-2.5 py-1.5 rounded-lg text-xs border transition-colors ${
@@ -639,9 +588,7 @@ function App() {
           <span className={`px-2 py-0.5 rounded-md ${currentMode.badge}`}>{currentMode.label}：{currentMode.desc}</span>
           {messages.length > 0 && <span>共 {messages.length} 条消息</span>}
         </div>
-        {mode === 'agent' && (
-          <div className="text-[11px] text-gray-400 pt-1 shrink-0">💡 拿不准就选 Agent：既能查研报观点，也能查财务数字并出图表。</div>
-        )}
+        <div className="text-[11px] text-gray-400 pt-1 shrink-0">💡 Agent 分析：既能查研报观点，也能查财务数字并出图表。</div>
 
         {/* 消息列表 */}
         <div className="flex-1 overflow-y-auto py-4 space-y-4">
@@ -754,7 +701,7 @@ function App() {
           <div className="text-[11px] text-gray-400 mt-1.5 px-1">
             {isLoading
               ? ((stage ? (STAGE_COPY[stage] || '正在处理…') : '正在生成') + '，点击「停止」可中断…')
-              : (currentMode.label + '：' + currentMode.desc + (mode === 'agent' ? ' · 拿不准就选 Agent' : ''))}
+              : (currentMode.label + '：' + currentMode.desc)}
           </div>
         </div>
       </div>

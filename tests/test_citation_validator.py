@@ -101,3 +101,32 @@ def test_table_row_not_merged():
         '0.72', '2.73', '3.71', '5.08', '5.08', '139.37',
     ]
     assert v.extract_numbers('57.2 1019.9 2.66 2.91') == ['57.2', '1019.9', '2.66', '2.91']
+
+
+def test_hits_context_extraction(tmp_path):
+    # 命中数字应在原始文件文本中定位并附带上下文（供前端"查看原文"展示）
+    f = tmp_path / "云南白药2024年报.md"
+    f.write_text(
+        "云南白药2024年实现营业收入400.33亿元，同比增长2.36%，归母净利润47.49亿元，同比增长16.02%。",
+        encoding="utf-8",
+    )
+    v = CitationValidator(corpus_root=str(tmp_path))
+    rec = v.check_reference(str(f), "归母净利润47.49亿元，同比增长16.02%")
+    assert rec["num_hit"] == rec["nums"]
+    assert rec["hits_context"]
+    assert all("num" in h and "context" in h for h in rec["hits_context"])
+    assert any(h["num"] == "47.49" for h in rec["hits_context"])
+    ctx = [h for h in rec["hits_context"] if h["num"] == "47.49"][0]["context"]
+    assert "47.49" in ctx and "云南白药" in ctx
+    # 条数上限
+    assert len(rec["hits_context"]) <= v.MAX_HIT_CONTEXTS
+
+
+def test_hits_context_skips_unnormalized_number(tmp_path):
+    # 仅靠排版空格折叠（8 7 . 5 -> 87.5）才命中的数字，原始文本中定位不到则无上下文（不报错）
+    f = tmp_path / "康美指数.md"
+    f.write_text("区间价格涨幅达$8 7 . 5 \\%$，指数从 1 200 点上扬", encoding="utf-8")
+    v = CitationValidator(corpus_root=str(tmp_path))
+    rec = v.check_reference(str(f), "涨幅 $8 7 . 5\\%$")
+    assert rec["num_hit"] == rec["nums"] == 1
+    assert isinstance(rec["hits_context"], list)

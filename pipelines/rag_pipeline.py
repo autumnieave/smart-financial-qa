@@ -51,6 +51,31 @@ from data import (
 )
 
 logger = logging.getLogger(__name__)
+def _table_html_to_text(html: str) -> str:
+    """将聚合表格的 HTML 行文本转为可读纯文本。
+
+    研报表格行以 HTML 形式存储（``<tr><td>a</td><td>b</td></tr>``），
+    转为 ``a | b`` 形式的纯文本便于前端直接展示。
+
+    Args:
+        html: 聚合表格文本（可能混有非 HTML 行）
+
+    Returns:
+        单元格用 `` | `` 分隔的纯文本行；非 HTML 行原样保留。
+    """
+    if not html:
+        return ""
+    lines = []
+    for row in re.findall(r"<tr[^>]*>(.*?)</tr>", html, flags=re.S):
+        cells = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", row, flags=re.S)
+        if cells:
+            cleaned = [re.sub(r"<[^>]+>", "", c).replace("\n", " ").strip() for c in cells]
+            lines.append(" | ".join(cleaned))
+    if lines:
+        return "\n".join(lines)
+    return html
+
+
 class RAGPipeline:
     """
     RAG完整流程编排类
@@ -386,6 +411,7 @@ class RAGPipeline:
                 "num_hit": rec["num_hit"],
                 "num_ratio": rec["num_ratio"],
                 "unhit": rec["unhit"],
+                "hits_context": rec.get("hits_context") or [],
             }
             kept.append(ref)
         if dropped and verbose:
@@ -778,12 +804,14 @@ class RAGPipeline:
         避免聚合导致 paper_path/摘要取错文件。
         """
         orig_idx = index_map.get(idx, idx) if index_map else idx
-        if idx in aggregated_meta:
+        if aggregated_meta and idx in aggregated_meta:
             meta = aggregated_meta[idx]
             paper_path = meta.get("paper_path", "聚合表格/多源")
             full_text = candidate_docs[idx]
-            # 聚合表格没有单块摘要
-            summary_text = '这是一个表格'
+            # 聚合表格：转纯文本作为引用内容，避免"查看原文"只有占位文案
+            summary_text = _table_html_to_text(full_text)
+            if len(summary_text) > 1200:
+                summary_text = summary_text[:1200] + "\n...(表格内容过长，已截断)" 
         elif orig_idx < len(search_results):
             payload = search_results[orig_idx]["payload"]
             paper_path = payload.get("source", "")
@@ -806,6 +834,14 @@ class RAGPipeline:
         # 如果正则没有匹配到，尝试用 LLM 提取
         if not paper_image:
             paper_image = self._extract_image_title_with_llm(full_text)
+
+        # 表格占位符（研报 md 中的 [TABLE_PLACEHOLDER_N] / [表格_N]）在引文中无内容，
+        # 替换为明确提示，避免"查看原文"只看到占位符（表格行引用已由聚合逻辑补充内容）
+        summary_text = re.sub(
+            r"\[TABLE_PLACEHOLDER_\d+\]|\[表格_\d+\]",
+            "[表格数据详见研报原文，此处省略]",
+            summary_text,
+        )
 
         return {
             "paper_path": paper_path,
@@ -990,7 +1026,10 @@ class RAGPipeline:
         if self._should_aggregate_table(user_input):
             if verbose:
                 print("[聚合模式] 检测到趋势/对比类问题，将合并相关表格行")
-            candidate_docs, _, _, _= self._aggregate_parent_table(search_results, candidate_docs)
+            candidate_docs, _, aggregated_meta, agg_index_map = self._aggregate_parent_table(search_results, candidate_docs)
+        else:
+            aggregated_meta = {}
+            agg_index_map = {}
 
         # Rerank（请求 oversample 条，再按每文件上限收敛回 RERANK_TOP_N）
         rerank_results = self.reranker.rerank(

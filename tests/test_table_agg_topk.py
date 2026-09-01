@@ -127,3 +127,55 @@ def test_build_reference_uses_index_map():
     # 关键回归：聚合表位置0 回映射到原索引0
     ref0 = p._build_reference_for_doc(0, search_results, new_docs, aggregated_meta, index_map)
     assert ref0["paper_path"] == "a.md"
+
+
+def test_table_html_to_text_converts_rows():
+    from pipelines.rag_pipeline import _table_html_to_text
+    html = (
+        "<tr><td>云南白药</td><td>400.33</td><td>2.36%</td></tr>"
+        "<tr><td>归母净利润</td><td>47.49</td><td>16.02%</td></tr>"
+    )
+    out = _table_html_to_text(html)
+    assert "云南白药 | 400.33 | 2.36%" in out
+    assert "归母净利润 | 47.49 | 16.02%" in out
+    assert "<td>" not in out and "<tr>" not in out
+
+
+def test_table_html_to_text_keeps_plain_text():
+    from pipelines.rag_pipeline import _table_html_to_text
+    plain = "行业研报观点：2024 年医药行业整体平稳。"
+    assert _table_html_to_text(plain) == plain
+    assert _table_html_to_text("") == ""
+
+
+def test_build_reference_agg_table_uses_content():
+    # 聚合表格引用应展示表格纯文本，而不是"这是一个表格"占位文案
+    from pipelines.rag_pipeline import RAGPipeline
+    pipe = RAGPipeline.__new__(RAGPipeline)
+    pipe._extract_image_title_with_llm = lambda full_text: ""
+    aggregated_meta = {0: {"paper_path": "测试研报.md"}}
+    candidate_docs = [
+        "<tr><td>云南白药</td><td>400.33</td><td>2.36%</td></tr>"
+        "<tr><td>归母净利润</td><td>47.49</td><td>16.02%</td></tr>"
+    ]
+    ref = pipe._build_reference_for_doc(0, [], candidate_docs, aggregated_meta)
+    assert "云南白药 | 400.33 | 2.36%" in ref["text"]
+    assert "归母净利润 | 47.49 | 16.02%" in ref["text"]
+    assert "这是一个表格" not in ref["text"]
+
+
+def test_build_reference_placeholder_replaced():
+    # 普通片段中的 [TABLE_PLACEHOLDER_N] 应替换为明确提示，保留表说明文字
+    from pipelines.rag_pipeline import RAGPipeline
+    pipe = RAGPipeline.__new__(RAGPipeline)
+    pipe._extract_image_title_with_llm = lambda full_text: ""
+    search_results = [{
+        "payload": {
+            "source": "测试研报.md",
+            "summary": "表 1：收入及毛利拆分\n[TABLE_PLACEHOLDER_459]\n**表说明** 该表格展示公司2024年收入结构。",
+        }
+    }]
+    ref = pipe._build_reference_for_doc(0, search_results, ["占位"])
+    assert "表格数据详见研报原文" in ref["text"]
+    assert "TABLE_PLACEHOLDER" not in ref["text"]
+    assert "表说明" in ref["text"]

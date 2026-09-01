@@ -113,6 +113,10 @@ class CitationValidator:
                     loose=comma+去全部空白
     """
 
+    # 命中数字上下文提取参数（供前端"查看原文"展示数字在文件全文中的位置）
+    MAX_CONTEXT_CHARS: int = 300
+    MAX_HIT_CONTEXTS: int = 3
+
     def __init__(self, corpus_root: Optional[str] = None, match_mode: str = "comma") -> None:
         self.corpus_root = corpus_root
         self.match_mode = match_mode
@@ -198,6 +202,41 @@ class CitationValidator:
             s = _collapse_number_spaces(s)
         return s
 
+    def _extract_context(
+        self, number: str, raw_content: str, near_text: Optional[str] = None
+    ) -> Optional[str]:
+        """在原始文件文本中定位数字，返回命中位置附近的上下文片段。
+
+        优先定位在引用片段（near_text）内出现的命中位置，使上下文与引文语义相关；
+        片段定位失败时回退到全文第一次出现位置。
+
+        Args:
+            number: 已命中的数字字符串（如 "29.77"）
+            raw_content: 目标文件的原始全文（未归一化）
+            near_text: 引用片段文本（用于优先定位片段内命中位置）
+
+        Returns:
+            压缩空白后的上下文片段；原始文本中定位不到该数字时返回 None
+            （例如仅靠排版空格折叠或单位换算变体才命中的数字）
+        """
+        if not number or not raw_content:
+            return None
+        matches = [m.start() for m in re.finditer(re.escape(number), raw_content)]
+        if not matches:
+            return None
+        pos = matches[0]
+        if near_text:
+            off = near_text.find(number)
+            if off >= 0:
+                probe = near_text[max(0, off - 40) : off + 40]
+                p = raw_content.find(probe)
+                if p >= 0:
+                    pos = p + (off - max(0, off - 40))
+        start = max(0, pos - 130)
+        end = min(len(raw_content), pos + len(number) + 170)
+        ctx = raw_content[start:end]
+        return re.sub(r"\s+", " ", ctx).strip()
+
     def number_in_text(
         self, number: str, haystack: str, accept_unit_variants: bool = False
     ) -> Tuple[bool, bool]:
@@ -249,6 +288,7 @@ class CitationValidator:
         num_hit = 0
         unhit: List[str] = []
         unit_hit: List[str] = []
+        hits_context: List[Dict[str, Any]] = []
         if located and numbers:
             content = ""
             try:
@@ -263,6 +303,10 @@ class CitationValidator:
                     num_hit += 1
                     if unit_only:
                         unit_hit.append(number)
+                    elif len(hits_context) < self.MAX_HIT_CONTEXTS:
+                        ctx = self._extract_context(number, content, near_text=text)
+                        if ctx is not None and not any(h["context"] == ctx for h in hits_context):
+                            hits_context.append({"num": number, "context": ctx})
                 else:
                     unhit.append(number)
         return {
@@ -275,6 +319,7 @@ class CitationValidator:
             "num_ratio": round(num_hit / len(numbers), 4) if numbers else None,
             "unhit": unhit,
             "unit_hit": unit_hit,
+            "hits_context": hits_context,
         }
 
     def check_references(

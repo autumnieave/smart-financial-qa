@@ -175,6 +175,8 @@ async def chat_stream(request: ChatRequest):
                 box["result"] = result
                 queue.put_nowait(("finish", None))
             except Exception as e:  # noqa: BLE001
+                import traceback
+                traceback.print_exc()
                 queue.put_nowait(("error", str(e)))
 
         task = asyncio.create_task(asyncio.to_thread(run_query))
