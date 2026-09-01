@@ -1,0 +1,4 @@
+# 开发/测试依赖（CI 与本地跑测试用）；自动引入运行时依赖
+-r requirements.txt
+pytest>=7.4.0
+pytest-cov>=4.1.0

@@ -1,0 +1,105 @@
+﻿services:
+
+  # ==================== Qdrant 向量数据库 ====================
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"   # gRPC / REST API
+      - "6334:6334"   # 内部集群通信
+    volumes:
+      - ./qdrant_storage:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__SERVICE__HTTP_PORT=6333
+    healthcheck:
+      test: ["CMD",  "wget", "--spider", "http://localhost:6333/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ==================== Redis 会话记忆（可选，MEMORY_BACKEND=redis 时启用） ====================
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # ==================== MySQL 财务数据库（SQL 链路；首次启动自动建表 database/schema.sql，数据需自行抽取入库） ====================
+  mysql:
+    image: mysql:8.0
+    container_name: mysql
+    restart: unless-stopped
+    ports:
+      - "3306:3306"
+    environment:
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-123456}
+      - MYSQL_DATABASE=financial_database
+    volumes:
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -p$$MYSQL_ROOT_PASSWORD"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # ==================== FastAPI 后端 ====================
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./result:/app/result
+      - ./qdrant_db:/app/qdrant_db
+      - ./database:/app/database          # SQLite 会话记忆持久化
+    environment:
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - QDRANT_COLLECTION_NAME=research_reports_v3
+      - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY:-}
+      - LLM_MODEL=qwen3.5-plus
+      - EMBEDDING_MODEL=text-embedding-v2
+      - RERANK_MODEL=qwen3-rerank
+      - MEMORY_BACKEND=${MEMORY_BACKEND:-sqlite}
+      - MEMORY_DB_PATH=/app/database/chat_memory.db
+      - MEMORY_REDIS_URL=redis://redis:6379/0
+      - MEMORY_TTL_SECONDS=${MEMORY_TTL_SECONDS:-86400}
+      - MYSQL_HOST=${MYSQL_HOST:-mysql}
+      - MYSQL_PORT=${MYSQL_PORT:-3306}
+      - MYSQL_USER=${MYSQL_USER:-root}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-123456}
+      - MYSQL_DATABASE=${MYSQL_DATABASE:-financial_database}
+    depends_on:
+      qdrant:
+        condition: service_started
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  # ==================== Nginx 前端 ====================
+  frontend:
+    build:
+      context: ./qa-frontend
+      dockerfile: Dockerfile
+      args:
+        - VITE_API_URL=    # 空字符串 = 同源相对路径，经 Nginx 反代到后端
+    container_name: frontend
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend

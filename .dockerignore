@@ -1,0 +1,32 @@
+# Git / 环境
+.git
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# 前端
+qa-frontend/node_modules
+qa-frontend/dist
+
+# 运行时数据与大数据目录（不入镜像，需卷挂载/本地构建）
+qdrant_storage
+qdrant_db
+result
+测试数据
+B题数据及提交说明
+汇总结果
+训练结果数据
+archive
+
+# 密钥与缓存
+.env
+.env.*
+database/chat_memory.db*
+database/bm25_index*.pkl
+_*.py
+*.log
+/failed_files.txt
+/*.csv
