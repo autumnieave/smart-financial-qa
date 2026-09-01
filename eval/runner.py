@@ -1,0 +1,216 @@
+"""eval/runner.py —— 统一评估 CLI（python -m eval ...）
+
+子命令：
+  golden init/list/verify   golden set 版本化
+  sql --suite ...           路由到 tools/data_scripts 回归脚本（全量/Agent/守卫/自测）
+  citation --refs ...       L1 引用核验（复用 pipelines.citation_validator）
+  report                    聚合最新证据生成 docs/评估报告.md
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import sys
+from pathlib import Path
+from typing import List, Optional
+
+from eval import golden as golden_mod
+from eval import metrics as metrics_mod
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+#: SQL 回归套件 → tools/data_scripts 模块名
+SQL_SUITES = {
+    "full": "tools.data_scripts.sql_full_regression_native",
+    "agent": "tools.data_scripts.sql_full_regression_native",
+    # guard 套件已下线：SQL 守卫逻辑由 tests/test_sql_guard.py 覆盖，Dify 回归脚本已归档
+    "selftest": "tools.data_scripts.sql_validator_selftest",
+}
+
+
+def _stdout_utf8() -> None:
+    """Windows 控制台统一 UTF-8 输出"""
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
+
+def cmd_golden_init(args: argparse.Namespace) -> int:
+    """golden init：固化题库快照并注册版本"""
+    path = golden_mod.init_golden(Path(args.source), args.version, args.tag)
+    print(f"golden set 已创建: {path}")
+    print(f"版本: {args.version}  tag: {args.tag or '-'}")
+    return 0
+
+
+def cmd_golden_list(args: argparse.Namespace) -> int:
+    """golden list：列出全部版本"""
+    versions = golden_mod.list_versions()
+    if not versions:
+        print("（暂无 golden 版本，先运行: python -m eval golden init --source ... --version v1）")
+        return 0
+    for v in versions:
+        c = v["counts"]
+        print(f"{v['version']:<8} {v['created_at']}  {v['tag']}  [{c['questions']}题/{c['sub_questions']}子问题/{c['sql_statements']}句]")
+    return 0
+
+
+def cmd_golden_verify(args: argparse.Namespace) -> int:
+    """golden verify：校验快照完整性 + 源文件哈希"""
+    result = golden_mod.verify_version(args.version)
+    if result["ok"]:
+        print(f"golden {args.version} 校验通过（快照完整；源文件哈希一致）")
+        print(f"计数: {result['counts']}")
+        return 0
+    print(f"golden {args.version} 校验失败:")
+    for e in result["errors"]:
+        print(f"  - {e}")
+    return 1
+
+
+def cmd_sql(args: argparse.Namespace) -> int:
+    """sql：路由到 tools/data_scripts 回归脚本（子进程，保留断点续跑）"""
+    module = SQL_SUITES.get(args.suite)
+    if not module:
+        print(f"未知套件: {args.suite}（可选: {', '.join(SQL_SUITES)}）")
+        return 2
+    cmd = [sys.executable, "-X", "utf8", "-m", module]
+    if getattr(args, "limit", None):
+        cmd += ["--limit", str(args.limit)]
+    if getattr(args, "only", None):
+        cmd += ["--only"] + args.only
+    if getattr(args, "backend", None):
+        cmd += ["--backend", args.backend]
+    if getattr(args, "progress_every", 0):
+        cmd += ["--progress-every", str(args.progress_every)]
+    print("+ " + " ".join(cmd))
+    return subprocess.call(cmd, cwd=str(REPO_ROOT))
+
+
+def cmd_citation(args: argparse.Namespace) -> int:
+    """citation：对引用 JSON 执行 L1 核验（文件可溯源 + 数字命中）"""
+    refs_path = Path(args.refs)
+    if not refs_path.is_file():
+        print(f"引用文件不存在: {refs_path}")
+        return 2
+    from config.rag_config import RAGConfig
+    from pipelines.citation_validator import CitationValidator
+
+    references = json.loads(refs_path.read_text(encoding="utf-8"))
+    validator = CitationValidator(corpus_root=RAGConfig().CITATION_CORPUS_ROOT, match_mode=args.mode)
+    records = validator.check_references(references)
+    summary = validator.summarize(records)
+
+    print(f"\n引用核验完成：共 {summary['total']} 条引用")
+    print(f"文件可溯源率：{summary['traceable']}/{summary['total']} = {summary['traceable_rate'] * 100:.1f}%"
+          f"（exact {summary['exact']} + fuzzy {summary['fuzzy']}，missing {summary['missing']}）")
+    if summary["num_total"]:
+        print(f"数字命中率：{summary['num_hit']}/{summary['num_total']} = {summary['num_rate'] * 100:.1f}%"
+              f"（口径 {args.mode}）")
+    out_path = refs_path.with_name(refs_path.stem + "_citation_report.json")
+    out_path.write_text(json.dumps({"records": records, "summary": summary}, ensure_ascii=False, indent=1), encoding="utf-8")
+    print(f"逐条明细已写入：{out_path}")
+    return 0
+
+
+def cmd_retrieval(args: argparse.Namespace) -> int:
+    """retrieval：检索层对比（纯向量 vs 混合，引用命中），委托 eval.retrieval_cmp"""
+    from eval import retrieval_cmp
+    return retrieval_cmp.main([
+        "--collection", args.collection,
+        "--k", str(args.k),
+        "--limit", str(args.limit),
+        "--match", args.match,
+        "--rrf-k", str(args.rrf_k),
+        "--topk-bm25", str(args.topk_bm25),
+        "--vector-floor-ratio", str(args.vector_floor_ratio),
+        "--rerank-top-n", str(args.rerank_top_n),
+        "--out", args.out,
+        "--json-out", args.json_out,
+    ])
+
+
+def cmd_report(args: argparse.Namespace) -> int:
+    """report：聚合最新证据生成评估报告"""
+    versions = golden_mod.list_versions()
+    golden = golden_mod.load_golden(versions[-1]["version"]) if versions else None
+    report = metrics_mod.build_report(
+        golden=golden,
+        sql_full=metrics_mod.sql_metrics(metrics_mod.SQL_FULL_SUMMARY),
+        sql_agent=metrics_mod.sql_metrics(metrics_mod.SQL_AGENT_SUMMARY),
+        sql_agent_langgraph=metrics_mod.sql_metrics(metrics_mod.SQL_AGENT_LANGGRAPH_SUMMARY),
+        sql_native=metrics_mod.sql_metrics(metrics_mod.SQL_NATIVE_SUMMARY),
+        citation=metrics_mod.citation_metrics(metrics_mod.CITATION_REPORT),
+        badcase=metrics_mod.badcase_count(),
+    )
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(report, encoding="utf-8")
+    print(report)
+    print(f"\n报告已写入：{out}")
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """组装子命令解析器"""
+    parser = argparse.ArgumentParser(prog="eval", description="智能问数系统评估闭环（golden 版本化 + SQL/引用回归）")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p_golden = sub.add_parser("golden", help="golden set 版本化管理")
+    gsub = p_golden.add_subparsers(dest="golden_cmd", required=True)
+    p_init = gsub.add_parser("init", help="固化题库快照并注册版本")
+    p_init.add_argument("--source", required=True, help="源 xlsx 路径（如 训练结果数据/result_3_parallel.xlsx）")
+    p_init.add_argument("--version", required=True, help="版本号（如 v1）")
+    p_init.add_argument("--tag", default="", help="描述标签（如 B题80题全量）")
+    p_init.set_defaults(func=cmd_golden_init)
+    p_list = gsub.add_parser("list", help="列出全部版本")
+    p_list.set_defaults(func=cmd_golden_list)
+    p_verify = gsub.add_parser("verify", help="校验快照完整性 + 源哈希")
+    p_verify.add_argument("--version", required=True)
+    p_verify.set_defaults(func=cmd_golden_verify)
+
+    p_sql = sub.add_parser("sql", help="运行 SQL 回归套件（路由到 tools/data_scripts）")
+    p_sql.add_argument("--suite", choices=sorted(SQL_SUITES), required=True)
+    p_sql.add_argument("--limit", type=int, default=0, help="只跑前 N 题（冒烟）")
+    p_sql.add_argument("--only", nargs="+", default=None, help="只跑指定编号（如 B2007 B2041）")
+    p_sql.add_argument("--backend", choices=["handwritten", "langgraph"], default=None,
+                       help="Agent 规划器后端（透传给 agent 套件；默认取配置 AGENT_PLANNER_BACKEND）")
+    p_sql.add_argument("--progress-every", type=int, default=0,
+                       help="每 N 题打印一次进度汇总（透传给 agent 套件；0=套件默认）")
+    p_sql.set_defaults(func=cmd_sql)
+
+    p_cit = sub.add_parser("citation", help="L1 引用核验")
+    p_cit.add_argument("--refs", required=True, help="引用 JSON 路径（元素含 paper_path/text）")
+    p_cit.add_argument("--mode", choices=["raw", "comma", "loose"], default="comma", help="数字匹配口径")
+    p_cit.set_defaults(func=cmd_citation)
+
+    p_retr = sub.add_parser("retrieval", help="检索层对比：纯向量 vs 混合（引用命中）")
+    p_retr.add_argument("--collection", default="research_reports_v3", help="Qdrant 集合名（正式数据全量集合为 research_reports_v3_full）")
+    p_retr.add_argument("--k", type=int, default=10, help="召回 top-K（默认 10）")
+    p_retr.add_argument("--limit", type=int, default=0, help="只跑前 N 个有引用的题目（冒烟）")
+    p_retr.add_argument("--match", choices=["raw", "comma", "loose"], default="comma", help="数字匹配口径")
+    p_retr.add_argument("--rrf-k", type=int, default=0, help="RRF 常数（0=取配置）")
+    p_retr.add_argument("--topk-bm25", type=int, default=0, help="BM25 路召回量（0=取配置）")
+    p_retr.add_argument("--vector-floor-ratio", type=float, default=-1.0, help="向量路保底比例（-1=取配置，0=纯RRF）")
+    p_retr.add_argument("--rerank-top-n", type=int, default=0, help="对 top-K 候选做 Rerank 复排并统计精排后 top-N 命中（0=不开启）")
+    p_retr.add_argument("--out", default="docs/检索对比报告.md", help="markdown 报告路径")
+    p_retr.add_argument("--json-out", default="训练结果数据/retrieval_cmp.json", help="JSON 明细路径")
+    p_retr.set_defaults(func=cmd_retrieval)
+
+    p_rep = sub.add_parser("report", help="聚合最新证据生成评估报告")
+    p_rep.add_argument("--out", default="docs/评估报告.md", help="输出路径（默认 docs/评估报告.md）")
+    p_rep.set_defaults(func=cmd_report)
+    return parser
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    """CLI 入口"""
+    _stdout_utf8()
+    args = build_parser().parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
