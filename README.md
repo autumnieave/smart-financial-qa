@@ -27,7 +27,7 @@ flowchart TD
     subgraph DATA["数据与索引层"]
         A["研报 Markdown + 财报 PDF"] --> B["MinerU 解析 + 层级分块\noverlap=100"]
         B --> C["Embedding\ntext-embedding-v2"]
-        C --> D[("Qdrant\nresearch_reports_v3")]
+        C --> D[("Qdrant\nresearch_reports_v3_full")]
         E["财报字段抽取"] --> F[("MySQL\nfinancial_database")]
     end
 

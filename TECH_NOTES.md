@@ -116,7 +116,7 @@ from langchain_qdrant import QdrantVectorStore
 
 vs = QdrantVectorStore(
     client=qdrant_client,          # qdrant_client.QdrantClient 实例
-    collection_name="research_reports_v3",
+    collection_name="research_reports_v3_full",
     embedding=embedding_adapter,   # 实现 Embeddings 接口
     content_payload_key="content",
     validate_collection_config=False,  # 跳过 embed_documents 维度校验

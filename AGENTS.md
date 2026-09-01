@@ -113,7 +113,7 @@ git commit -am "中文简述改动"   # 提交前先确认无 .env/大文件
 
 ## 数据依赖
 
-- Qdrant 需在 `localhost:6333` 运行（`docker compose up -d qdrant`），集合名 `research_reports_v3`。
+- Qdrant 需在 `localhost:6333` 运行（`docker compose up -d qdrant`），集合名 `research_reports_v3_full`。
 - 环境变量在 `.env`：`DASHSCOPE_API_KEY`（必填）、`MYSQL_*`（财务查询，Agent 用）。
 - Agent 财务查询走原生 SQL 链路（MySQL + LLM 三层防线），不依赖 Dify；MySQL 不可用时返回友好错误 JSON。
 - 混合检索（#8 实验）：`hybrid on` 首次使用会滚动 Qdrant 全量点构建 BM25 索引，缓存于 `database/bm25_index.*.pkl`（按 集合名+点数 自动重建，已 gitignore）；纯 Python 实现，无外部依赖。

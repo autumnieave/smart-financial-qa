@@ -38,7 +38,7 @@
 
 ## 已知问题
 
-- **检索质量依赖数据**：`research_reports_v3` 集合若混入非研报数据，检索结果相关性下降（此前出现过客服类文档混入）。
+- **检索质量依赖数据**：`research_reports_v3_full` 集合若混入非研报数据，检索结果相关性下降（此前出现过客服类文档混入）。
 - **Agent 财务查询依赖 MySQL**：原生 SQL 链路（生成→执行→分析→ECharts）需 MySQL 可用；MySQL 不可用时返回友好错误提示，RAG 检索不受影响。
 - **前端为 React 19**：`qa-frontend/` 基于 React 19 + Vite + Tailwind（README 已同步修正）。
 - **LCEL 链路错误处理**：`chains/rag_chain.py` 的 `format_docs` 带大量 DEBUG print，生产可清理；链异常以文本拼接返回，缺少结构化错误。

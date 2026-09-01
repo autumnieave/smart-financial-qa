@@ -65,7 +65,7 @@ class RAGConfig:
     """Qdrant 服务地址"""
     QDRANT_PORT: int = field(default_factory=lambda: int(_env("QDRANT_PORT", "6333")))
     """Qdrant 服务端口"""
-    QDRANT_COLLECTION_NAME: str = field(default_factory=lambda: _env("QDRANT_COLLECTION_NAME", "research_reports_v3"))
+    QDRANT_COLLECTION_NAME: str = field(default_factory=lambda: _env("QDRANT_COLLECTION_NAME", "research_reports_v3_full"))
     """Qdrant 集合名称"""
     DISTANCE_METRIC: str = field(default_factory=lambda: _env("DISTANCE_METRIC", "COSINE"))
     """向量距离计算方式 (COSINE / DOT / EUCLIDEAN / MANHATTAN)"""
