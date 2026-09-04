@@ -1,93 +1,80 @@
-﻿services:
+# 智能问数系统 docker compose（2026-09-04 修订：与本地测试同源）
+#
+# 目标：`docker compose up -d` 启动的前后端，连接的就是本地测试正在用的那套服务：
+#   - Qdrant 由本项目直接管理（数据 ./qdrant_storage，已从旧项目 26 目录整体迁移，
+#     含 research_reports_v3_full）；宿主 6333 仍发布，本地 uvicorn 可继续访问同一数据。
+#   - MySQL 连「宿主」已导入数据的 financial_database（host.docker.internal）。
+#   - 后端环境变量用 ${VAR:-default} 透传根目录 .env（AGENT_PLANNER_BACKEND=langgraph、
+#     AGENT_LANGGRAPH_MULTI_AGENT=true 等自动生效），改 .env 后重 up 即同步。
+#   - 语料目录以只读卷挂载进后端，供引用核验 / 「查看原文」使用。
+#
+# 常用命令（PowerShell）：
+#   docker compose up -d                  # qdrant + backend + frontend
+#   curl http://localhost:18000/health    # 容器后端直连（宿主 8000 留给本地 uvicorn）
+#   curl http://localhost:8080/health     # 经 Nginx 同源反代到容器后端
+#   docker compose logs -f backend
 
+name: smart-financial-qa
+
+services:
   # ==================== Qdrant 向量数据库 ====================
   qdrant:
     image: qdrant/qdrant:latest
-    container_name: qdrant
     restart: unless-stopped
     ports:
-      - "6333:6333"   # gRPC / REST API
-      - "6334:6334"   # 内部集群通信
+      - 6333:6333
+      - 6334:6334
     volumes:
       - ./qdrant_storage:/qdrant/storage
-    environment:
-      - QDRANT__SERVICE__GRPC_PORT=6334
-      - QDRANT__SERVICE__HTTP_PORT=6333
-    healthcheck:
-      test: ["CMD",  "wget", "--spider", "http://localhost:6333/healthz"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-
-  # ==================== Redis 会话记忆（可选，MEMORY_BACKEND=redis 时启用） ====================
-  redis:
-    image: redis:7-alpine
-    container_name: redis
-    restart: unless-stopped
-    ports:
-      - "6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 3s
-      retries: 3
-
-  # ==================== MySQL 财务数据库（SQL 链路；首次启动自动建表 database/schema.sql，数据需自行抽取入库） ====================
-  mysql:
-    image: mysql:8.0
-    container_name: mysql
-    restart: unless-stopped
-    ports:
-      - "3306:3306"
-    environment:
-      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-123456}
-      - MYSQL_DATABASE=financial_database
-    volumes:
-      - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
-    healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h localhost -p$$MYSQL_ROOT_PASSWORD"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 20s
+    # 不设 healthcheck：qdrant 基础镜像无 wget/curl，避免一直 unhealthy；
+    # backend 仅依赖容器启动（service_started）。
 
   # ==================== FastAPI 后端 ====================
   backend:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: backend
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - 18000:8000    # 宿主 8000 已被本地 uvicorn 占用；浏览器走前端 8080 即可
+    extra_hosts:
+      - host.docker.internal:host-gateway   # 容器 → 宿主（Docker Desktop 默认已支持；此项兼容 Linux）
     volumes:
-      - ./result:/app/result
-      - ./qdrant_db:/app/qdrant_db
-      - ./database:/app/database          # SQLite 会话记忆持久化
+      - ./result:/app/result                             # 图表/报告产物
+      - ./database:/app/database                         # sqlite 会话记忆 / 查询缓存，与本地同源
+      - ./B题数据及提交说明:/app/B题数据及提交说明:ro       # 引用核验语料（查看原文/数字核验）
     environment:
+      # ---- 检索/向量库：走 compose 内网 qdrant 服务（宿主仍可从 6333 访问同一数据）----
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
-      - QDRANT_COLLECTION_NAME=research_reports_v3_full
+      - QDRANT_COLLECTION_NAME=${QDRANT_COLLECTION_NAME:-research_reports_v3_full}
+      # ---- DashScope / 模型 ----
       - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY:-}
-      - LLM_MODEL=qwen3.5-plus
-      - EMBEDDING_MODEL=text-embedding-v2
-      - RERANK_MODEL=qwen3-rerank
+      - LLM_MODEL=${LLM_MODEL:-qwen3.5-plus}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-text-embedding-v2}
+      - RERANK_MODEL=${RERANK_MODEL:-qwen3-rerank}
+      # ---- Agent / 检索 / 生成，与本地 .env + config 默认值对齐 ----
+      - AGENT_PLANNER_BACKEND=${AGENT_PLANNER_BACKEND:-langgraph}
+      - AGENT_LANGGRAPH_MULTI_AGENT=${AGENT_LANGGRAPH_MULTI_AGENT:-true}
+      - SUPERVISOR_MODEL=${SUPERVISOR_MODEL:-qwen-flash}
+      - AGGREGATOR_MODEL=${AGGREGATOR_MODEL:-}
+      - ENABLE_MULTI_TURN=${ENABLE_MULTI_TURN:-false}
+      - HYBRID_ENABLED=${HYBRID_ENABLED:-true}
+      - GENERATOR_CONTEXT_TOP_N=${GENERATOR_CONTEXT_TOP_N:-10}
+      - CITATION_CORPUS_ROOT=${CITATION_CORPUS_ROOT:-B题数据及提交说明/全部数据/正式数据/附件5：研报数据}
+      # ---- 记忆（SQLite 默认；Redis 需自备/另起）----
       - MEMORY_BACKEND=${MEMORY_BACKEND:-sqlite}
       - MEMORY_DB_PATH=/app/database/chat_memory.db
-      - MEMORY_REDIS_URL=redis://redis:6379/0
+      - MEMORY_REDIS_URL=redis://host.docker.internal:6379/0
       - MEMORY_TTL_SECONDS=${MEMORY_TTL_SECONDS:-86400}
-      - MYSQL_HOST=${MYSQL_HOST:-mysql}
-      - MYSQL_PORT=${MYSQL_PORT:-3306}
+      # ---- MySQL：连宿主已导入数据的 financial_database（root/123456）----
+      - MYSQL_HOST=host.docker.internal
+      - MYSQL_PORT=3306
       - MYSQL_USER=${MYSQL_USER:-root}
       - MYSQL_PASSWORD=${MYSQL_PASSWORD:-123456}
       - MYSQL_DATABASE=${MYSQL_DATABASE:-financial_database}
     depends_on:
       qdrant:
-        condition: service_started
-      mysql:
-        condition: service_healthy
-      redis:
         condition: service_started
 
   # ==================== Nginx 前端 ====================
@@ -96,10 +83,14 @@
       context: ./qa-frontend
       dockerfile: Dockerfile
       args:
-        - VITE_API_URL=    # 空字符串 = 同源相对路径，经 Nginx 反代到后端
-    container_name: frontend
+        - VITE_API_URL=     # 空 = 同源相对路径（/chat、/chat/stream 等经 Nginx 反代到 backend:8000）
     restart: unless-stopped
     ports:
-      - "8080:80"
+      - 8080:80
     depends_on:
       - backend
+
+# 说明：MySQL 默认连宿主实例（host.docker.internal:3306，数据在本地 MySQL 的
+# financial_database）。全新环境没有外部 MySQL 时，可自行补一个 mysql 服务块：
+#   mysql: image mysql:8.0, ports 3307:3306（避开宿主 3306）, MYSQL_ROOT_PASSWORD=123456,
+#          并将 backend 的 MYSQL_HOST 改为 mysql、MYSQL_PORT 改为 3306。

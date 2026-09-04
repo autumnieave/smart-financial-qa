@@ -70,3 +70,6 @@ database/训练数据库.sql
 database/extracted_missing_fields.csv
 database/golden/
 
+
+# ===== 本地任务清单/夜间任务（本地保留，不上传） =====
+/TASKS/

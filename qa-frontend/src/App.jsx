@@ -6,7 +6,8 @@ import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import 'highlight.js/styles/github.css'; // 代码高亮样式
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+// VITE_API_URL 为空串时走同源相对路径（docker 版经 Nginx 反代到后端）；本地 dev 由 qa-frontend/.env 提供 http://localhost:8000
+const API_URL = import.meta.env.VITE_API_URL ?? '';
 const STORAGE_KEY = 'chatHistory';
 const SESSIONS_KEY = 'chatSessionsV2';
 const MAX_SESSIONS = 5;
