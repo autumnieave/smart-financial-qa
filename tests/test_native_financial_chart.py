@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 """tests/test_native_financial_chart.py —— 原生财务链路图表纯函数单测（零外部依赖）。
 
-覆盖 tools/native_financial.py 的 _to_num / _sanitize_chart：
+覆盖 tools/native_financial.py 的 _to_num / _sanitize_chart / _parse_chart_json_text：
 - _to_num：数据点数值归一（字符串数字转 float，非数值原样保留）
 - _sanitize_chart：ECharts option 校验（必须含非空 series[].data、超限截断、数值归一）
+- _parse_chart_json_text：LLM 图表输出容错解析（Markdown 围栏/解释前缀/尾部逗号）
 """
 
-from tools.native_financial import _sanitize_chart, _to_num
+from tools.native_financial import _parse_chart_json_text, _sanitize_chart, _to_num
 
 
 class TestToNum:
@@ -64,3 +65,37 @@ class TestSanitizeChart:
         option = {"series": [{"name": "x", "data": list(range(300))}]}
         out = _sanitize_chart(option)
         assert len(out["series"][0]["data"]) == 200
+
+
+class TestParseChartJsonText:
+    """_parse_chart_json_text LLM 图表输出容错解析。"""
+
+    VALID = '{"need_chart": true, "chart_type": "line", "chart": {"series": [{"name": "x", "data": [1, 2]}]}}'
+
+    def test_plain_json(self):
+        obj = _parse_chart_json_text(self.VALID)
+        assert obj is not None
+        assert obj["need_chart"] is True
+
+    def test_markdown_fence_json(self):
+        text = "```json\n" + self.VALID + "\n```"
+        assert _parse_chart_json_text(text) == _parse_chart_json_text(self.VALID)
+
+    def test_explanation_prefix(self):
+        text = "以下是生成的图表配置：\n" + self.VALID
+        obj = _parse_chart_json_text(text)
+        assert obj is not None
+        assert obj["need_chart"] is True
+
+    def test_trailing_comma_tolerated(self):
+        text = self.VALID[:-1] + "," + self.VALID[-1]
+        obj = _parse_chart_json_text(text)
+        assert obj is not None
+        assert obj["need_chart"] is True
+
+    def test_empty_rejected(self):
+        assert _parse_chart_json_text("") is None
+        assert _parse_chart_json_text("   ") is None
+
+    def test_non_json_rejected(self):
+        assert _parse_chart_json_text("很抱歉，无法生成图表。") is None

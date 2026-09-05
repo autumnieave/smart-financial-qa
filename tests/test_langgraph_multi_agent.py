@@ -106,7 +106,8 @@ def test_supervisor_splits_and_aggregates():
     result = _make_planner(client, rag, financial_tool=fin_tool).execute("分析万邦德")
     assert result["content"] == "整合回答"
     assert result["image"] == ["/result/fin.png"]
-    assert result["references"] == [{"paper_path": "stub.md"}]
+    assert [r["paper_path"] for r in result["references"]] == ["stub.md"]
+    assert result["references"][0]["text"] == "stub"  # 研报子 Agent 原始引用（权威口径，B-09）
     assert fin_calls == ["万邦德2023营收"]
     assert rag.calls == ["万邦德研报观点"]
     # supervisor 请求带 system + 用户问题；aggregator 请求带子结果上下文
@@ -140,6 +141,29 @@ def test_aggregator_merges_missing_references():
     result = _make_planner(client, rag).execute("有什么观点")
     assert any(r["paper_path"] == "stub.md" for r in result["references"])
     assert "研报检索结果" in result["content"] or result["content"] == "整合回答"
+
+
+def test_aggregator_fake_references_replaced_by_research_refs():
+    """aggregator 输出 example.com 占位假引用时，最终引用以研报子 Agent 返回为准（B-09）。"""
+    rag = StubRag()
+    client = FakeClient([
+        json.dumps({
+            "tasks": [
+                {"agent": "financial", "query": "天士力负债率"},
+                {"agent": "research", "query": "商誉减值风险研报"},
+            ],
+            "direct_answer": None,
+        }, ensure_ascii=False),
+        json.dumps({
+            "content": "整合回答",
+            "image": [],
+            "references": [{"paper_path": "https://example.com/fake_report.pdf", "text": "编造引用"}],
+        }, ensure_ascii=False),
+    ])
+    result = _make_planner(client, rag, financial_tool=_fin_tool).execute("分析商誉减值")
+    paths = [r.get("paper_path") for r in result["references"]]
+    assert paths == ["stub.md"]
+    assert not any(str(p).startswith("http") for p in paths)
 
 
 def test_thinking_disabled_by_default():

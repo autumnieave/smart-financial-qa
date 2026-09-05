@@ -130,10 +130,21 @@ def run_question_agent(item: Dict[str, Any], pipeline: RAGPipeline, schema: Opti
             content = answer.get("content", "")
         else:
             content = str(answer)
+        references: List[Dict[str, Any]] = []
+        if isinstance(answer, dict):
+            for ref in answer.get("references") or []:
+                if isinstance(ref, dict) and ref.get("paper_path"):
+                    references.append({
+                        "paper_path": str(ref.get("paper_path"))[:300],
+                        "text": str(ref.get("text") or "")[:300],
+                        "paper_image": str(ref.get("paper_image") or "")[:150],
+                    })
         details.append({
             "q": q[:150],
             "重试次数": MAX_RETRIES - 1 if answer is None else 0,
             "答案摘要": str(content)[:200],
+            "答案引用数": len(references),
+            "答案引用": references,
             "耗时": round(time.time() - t0, 1),
         })
         time.sleep(0.5)

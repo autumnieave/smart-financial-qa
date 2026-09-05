@@ -359,7 +359,6 @@ class LangGraphMultiAgentPlanner:
         """兜底合并：把子 Agent 的图片/引用补进最终结果（防 LLM 遗漏）。"""
         result = dict(result or {})
         images = list(result.get("image") or [])
-        refs = list(result.get("references") or [])
         chart = result.get("chart_json")
         for item in subtask_results.get("financial") or []:
             raw = item.get("raw")
@@ -374,13 +373,32 @@ class LangGraphMultiAgentPlanner:
             for img in raw.get("image") or []:
                 if img and img not in images:
                     images.append(img)
-        existing_paths = {r.get("paper_path") for r in refs if isinstance(r, dict)}
-        for item in subtask_results.get("research") or []:
-            raw = item.get("raw") or {}
-            for r in raw.get("references") or []:
-                if isinstance(r, dict) and r.get("paper_path") not in existing_paths:
+        research_items = subtask_results.get("research") or []
+        # 引用口径（B-09 修复）：研报子 Agent 返回的引用已过 L1 文件可溯源过滤，
+        # 优先以其为准；aggregator LLM 自拟的 references 可能含 example.com 等占位假引用，
+        # 故仅在“没有研报子任务”时才保留其结果引用（且剔除明显 URL 占位）。
+        refs: List[Dict[str, Any]] = []
+        if research_items:
+            existing_paths = set()
+            for item in research_items:
+                raw = item.get("raw") or {}
+                for r in raw.get("references") or []:
+                    if not isinstance(r, dict) or not r.get("paper_path"):
+                        continue
+                    path = str(r.get("paper_path"))
+                    if path in existing_paths:
+                        continue
                     refs.append(r)
-                    existing_paths.add(r.get("paper_path"))
+                    existing_paths.add(path)
+        else:
+            for r in result.get("references") or []:
+                if not isinstance(r, dict) or not r.get("paper_path"):
+                    continue
+                path = str(r.get("paper_path"))
+                lowered = path.lower()
+                if lowered.startswith("http://") or lowered.startswith("https://"):
+                    continue
+                refs.append(r)
         result["image"] = images
         result["references"] = refs
         if chart is not None:
