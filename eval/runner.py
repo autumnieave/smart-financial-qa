@@ -27,6 +27,8 @@ SQL_SUITES = {
     "agent": "tools.data_scripts.sql_full_regression_native",
     # guard 套件已下线：SQL 守卫逻辑由 tests/test_sql_guard.py 覆盖，Dify 回归脚本已归档
     "selftest": "tools.data_scripts.sql_validator_selftest",
+    "defense": "tools.data_scripts.sql_defense_ablation",
+    "backend_cmp": "tools.data_scripts.sql_agent_backend_compare_native",
 }
 
 

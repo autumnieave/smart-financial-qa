@@ -62,7 +62,7 @@ def _merge_chart_json(result: Dict[str, Any], messages: List[Dict[str, Any]]) ->
     if not isinstance(result, dict) or result.get("chart_json"):
         return result
     for m in messages:
-        if m.get("role") != "tool":
+        if not isinstance(m, dict) or m.get("role") != "tool":
             continue
         try:
             parsed = json.loads(m.get("content") or "")

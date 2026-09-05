@@ -1,4 +1,5 @@
 """chains/rerank.py"""
+import time
 import logging
 from typing import List, Dict, Any, Optional
 from config.rag_config import RAGConfig
