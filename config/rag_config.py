@@ -172,6 +172,8 @@ class RAGConfig:
     """SQL 生成是否做静态+编译校验（false=关闭，直接直通）"""
     AGENT_NATIVE_RETRY: int = field(default_factory=lambda: int(_env("AGENT_NATIVE_RETRY", "2")))
     """原生 SQL 生成校验失败后的重试次数（复用三层防线：静态校验 + MySQL 编译）"""
+    AGENT_METRIC_STANDARDIZE: bool = field(default_factory=lambda: _env("AGENT_METRIC_STANDARDIZE", "true").lower() == "true")
+    """SQL 生成前是否先做指标标准化小调用（问题→JSON，B-12 两步分解第 1 步；env AGENT_METRIC_STANDARDIZE=false 关闭并回退旧自选路径）"""
     MYSQL_HOST: str = field(default_factory=lambda: _env("MYSQL_HOST", "127.0.0.1"))
     """MySQL 地址（SQL 校验 schema / 编译终审用）"""
     MYSQL_PORT: int = field(default_factory=lambda: int(_env("MYSQL_PORT", "3306")))

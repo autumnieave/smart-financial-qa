@@ -27,6 +27,7 @@ from prompts.financial import (
     ANALYSIS_SYSTEM_PROMPT,
     CHART_GEN_SYSTEM_PROMPT,
     FINANCIAL_PROMPT_VERSION,
+    METRIC_STANDARDIZATION_SYSTEM_PROMPT,
     SQL_GEN_SYSTEM_PROMPT,
 )
 
@@ -270,11 +271,125 @@ def _merge_company_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return merged
 
 
-def _generate_sql(rag: Any, question: str, schema: Dict, conn: Any, retries: int) -> Tuple[str, List[str]]:
-    """LLM 生成 SQL + 三层防线校验；失败带错误重试。返回 (sql, 错误列表)。"""
+_METRIC_STANDARDIZE_MAX_TOKENS = 400
+
+
+def _parse_metric_json_text(text: str) -> Optional[Dict[str, Any]]:
+    """容错解析指标标准化 LLM 输出的 JSON（Markdown 围栏/前缀解释/尾部逗号兼容）。"""
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return None
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```[a-zA-Z]*\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+    candidates: List[str] = [cleaned]
+    start = cleaned.find("{")
+    if start > 0:
+        candidates.append(cleaned[start:])
+    for candidate in candidates:
+        for fixed in (candidate, _remove_trailing_commas(candidate)):
+            try:
+                obj = json.loads(fixed)
+            except (TypeError, ValueError):
+                continue
+            if isinstance(obj, dict):
+                return obj
+    return None
+
+
+def _normalize_metric_plan(plan: Any) -> Optional[Dict[str, Any]]:
+    """规整/校验指标标准化 JSON；缺关键键或类型错误返回 None（由调用方走旧路径兜底）。"""
+    if not isinstance(plan, dict):
+        return None
+    standard_fields = plan.get("standard_fields")
+    time_grain = plan.get("time_grain")
+    calculation = plan.get("calculation")
+    if (
+        not isinstance(standard_fields, list)
+        or not standard_fields
+        or not all(isinstance(x, str) and x.strip() for x in standard_fields)
+    ):
+        return None
+    if not isinstance(time_grain, dict) or not isinstance(time_grain.get("mode"), str) or not time_grain.get("mode"):
+        return None
+    if not isinstance(calculation, dict) or not isinstance(calculation.get("kind"), str) or not calculation.get("kind"):
+        return None
+    seen: List[str] = []
+    for field in standard_fields:
+        if field not in seen:
+            seen.append(field)
+    filter_terms = plan.get("filter_terms")
+    if not isinstance(filter_terms, dict):
+        filter_terms = {}
+    return {
+        "standard_fields": seen,
+        "time_grain": time_grain,
+        "calculation": calculation,
+        "filter_terms": filter_terms,
+    }
+
+
+def _metric_plan_to_text(metric_plan: Optional[Dict[str, Any]]) -> str:
+    """指标标准化结果转紧凑文本（供 SQL 生成 user content；失败兜底走旧自选文案）。"""
+    if not metric_plan:
+        return "（无上游指标提取，请依据字段白名单自选）"
+    return json.dumps(metric_plan, ensure_ascii=False)[:4000]
+
+
+def _standardize_metrics(rag: Any, question: str) -> Optional[Dict[str, Any]]:
+    """指标标准化小调用：问题 → JSON（standard_fields/time_grain/calculation/filter_terms，B-12 第 1 步）。
+
+    max_tokens 收紧到 _METRIC_STANDARDIZE_MAX_TOKENS 控制成本；
+    JSON 解析/规整失败或调用异常返回 None，由 _generate_sql 回退旧自选路径，避免单点故障阻断查询。
+
+    Args:
+        rag: RAGPipeline 实例（config / llm_generator）
+        question: 重构后的财务问题文本
+
+    Returns:
+        规整后的指标计划 JSON；不可用返回 None
+    """
+    config = getattr(rag, "config", None)
+    if config is not None and not getattr(config, "AGENT_METRIC_STANDARDIZE", True):
+        return None
+    model = getattr(config, "LLM_MODEL", "qwen3.5-plus") if config is not None else "qwen3.5-plus"
+    try:
+        resp = rag.llm_generator.client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": METRIC_STANDARDIZATION_SYSTEM_PROMPT},
+                {"role": "user", "content": f"重构后的问题：{question}"},
+            ],
+            temperature=0.1,
+            max_tokens=_METRIC_STANDARDIZE_MAX_TOKENS,
+            # 小 JSON 调用统一关思考，避免思考 token 挤占 max_tokens
+            extra_body={"enable_thinking": False},
+        )
+        plan = _normalize_metric_plan(_parse_metric_json_text(resp.choices[0].message.content or ""))
+        if plan is None:
+            logger.warning("原生财务查询：指标标准化 JSON 非法，回退自选路径: %s", str(question)[:80])
+            return None
+        logger.info("原生财务查询：指标标准化成功: %s", json.dumps(plan, ensure_ascii=False)[:600])
+        return plan
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("原生财务查询：指标标准化调用失败，回退自选路径: %s", exc)
+        return None
+
+
+def _generate_sql(
+    rag: Any, question: str, schema: Dict, conn: Any, retries: int, metric_plan: Optional[Dict[str, Any]] = None
+) -> Tuple[str, List[str]]:
+    """LLM 生成 SQL + 三层防线校验；失败带错误重试。返回 (sql, 错误列表)。
+
+    B-12 两步分解：默认先 _standardize_metrics 得到 JSON（standard_fields/time_grain/calculation/filter_terms），
+    SQL 生成只做“映射+拼装”；metric_plan 为 None（关闭/失败）时回退旧“依据字段白名单自选”文案。
+    """
+    if metric_plan is None:
+        metric_plan = _standardize_metrics(rag, question)
+    plan_text = _metric_plan_to_text(metric_plan)
     errors: List[str] = []
     for attempt in range(retries + 1):
-        user_content = f"重构后的问题: {question}\nStandard_field_name: （无上游指标提取，请依据字段白名单自选）"
+        user_content = f"重构后的问题: {question}\n指标标准化结果(JSON): {plan_text}"
         if errors:
             user_content += "\n\n上一次生成的 SQL 校验失败，错误如下，请修正后重新生成：\n" + "\n".join(errors[-3:])
         try:

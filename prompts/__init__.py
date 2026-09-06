@@ -1,5 +1,4 @@
 """prompts 包 —— 项目唯一 Prompt 目录（2026-08-22 收敛）
-
 统一所有业务 Prompt 的来源，避免散落内联导致漂移：
 - prompts/rag.py       RAG 问答（手写链路与 LCEL 链路同源模板）
 - prompts/pipeline.py  多轮澄清字段提取 / 摘要 / 图片检测
@@ -22,7 +21,7 @@ from prompts.pipeline import (
 from prompts.agent import AGENT_SYSTEM_PROMPT
 
 # 模板版本：每次修改 prompts 下任意模板文本时递增/更新
-PROMPT_VERSION = "2026-08-23-v1"
+PROMPT_VERSION = "2026-09-06-v1"
 
 __all__ = [
     "PROMPT_VERSION",
