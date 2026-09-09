@@ -24,10 +24,10 @@ _REAL_SRC = _ROOT / "database" / "golden" / "challenge_sources" / "v2_challenge_
 def _sample_items(n_per_cat: int = 1) -> list:
     """构造覆盖五类的合成挑战条目（不依赖真实题库）。"""
     base = {
-        "编号": "", "类别": "", "类别标签": "", "台账编号": "",
+        "编号": "", "类别": "", "类别标签": "",
         "问题": "片仔癀2025年三季度净利润是多少？", "期望行为": "refuse",
         "通过标准": "编造率=0", "断言": "no_fabricate", "复现路径": "阶段 B /chat 单发",
-        "准入": {"来源": "synthetic", "与v1无重复": True, "边界定义": "test"},
+        "台账编号": "TEST-CH", "准入": {"来源": "synthetic", "与v1无重复": True, "边界定义": "test"},
     }
     items = []
     for i, cat in enumerate(challenge_mod.JUDGE_TYPE):
