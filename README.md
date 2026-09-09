@@ -2,13 +2,13 @@
 
 面向上市公司研报与财报的端到端智能问答系统：用户用自然语言即可查询财务数据、研报观点，答案带引用可溯源。采用 **LangGraph 多 Agent 编排 + SQL 财务链路 + RAG 研报链路**，配套 FastAPI / React 前端与完整评估闭环。
 
-[![CI](https://github.com/autumnieave/smart-financial-qa/actions/workflows/ci.yml/badge.svg)](https://github.com/autumnieave/smart-financial-qa/actions/workflows/ci.yml) [![tests](https://img.shields.io/badge/123%20tests-passing-brightgreen)]() [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![CI](https://github.com/autumnieave/smart-financial-qa/actions/workflows/ci.yml/badge.svg)](https://github.com/autumnieave/smart-financial-qa/actions/workflows/ci.yml) [![tests](https://img.shields.io/badge/175%20tests-passing-brightgreen)]() [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 ## 核心指标
 
 - **SQL 编译通过率：96.9% → 100%**（80 题全量回归：Agent 口径 224/224，原生 SQL 链路 102/102）
 - **引用文件可溯源 100%（1080/1080）**、**答案数字可溯源 100%**（归一化口径），人工回查真实幻觉 **0 例**
-- **123 个离线单测全部通过**（零外部依赖，CI 自动执行）
+- **175 个离线单测全部通过**（175 用例 / 21 个测试文件，零外部依赖，CI 自动执行）
 - 数字级引用命中率 **70.2% → 74.9%**（混合检索：向量 + BM25 + RRF）
 
 ## 功能亮点
@@ -112,7 +112,7 @@ docker compose up -d --build
 ## 测试与评估
 
 ```bash
-python -m pytest tests/ -q        # 123 个离线单测（零外部依赖）
+python -m pytest tests/ -q        # 175 个离线单测 / 21 个测试文件（零外部依赖）
 python -m eval sql --suite full   # SQL 全量回归（需本地 golden 数据）
 python -m eval citation           # L1 引用核验（需本地语料）
 python -m eval report             # 聚合评估报告
@@ -146,7 +146,7 @@ pipelines/      RAGPipeline 全流程编排
 agents/         LangGraph 多 Agent + 自研 AgentPlanner（对照）
 prompts/        唯一 Prompt 目录
 tools/          SQL 校验器 / 原生财务查询 / 数据处理脚本
-tests/          123 个离线单测
+tests/          175 个用例 / 21 个测试文件（离线单测）
 qa-frontend/    React 19 前端
 ```
 
