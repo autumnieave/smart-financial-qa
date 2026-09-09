@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 from typing import List, Optional, Tuple
 
-FALLBACK_PROMPT_VERSION = "2026-09-09-v1"
+FALLBACK_PROMPT_VERSION = "2026-09-10-v1"  # B-27: 新增 refuse.injection 注入拒答模板
 
 #: 模板 ID（固定标识，写入日志/事件通道用于分支统计）
 REFUSE_OUT_OF_SCOPE = "refuse.out_of_scope"
@@ -31,6 +31,7 @@ REFUSE_DATA_NOT_FOUND = "refuse.data_not_found"
 REFUSE_YEAR_OUT_OF_RANGE = "refuse.year_out_of_range"
 REFUSE_SYSTEM_UNAVAILABLE = "refuse.system_unavailable"
 REFUSE_NOT_UNDERSTOOD = "refuse.not_understood"
+REFUSE_INJECTION = "refuse.injection"  # B-27 注入指令拒答（先拒答后回答）
 SUGGEST_MISSING_FIELD = "suggest.missing_field"
 HUMAN_HIGH_RISK_ADVICE = "human.high_risk_advice"
 
@@ -41,6 +42,7 @@ _CATEGORY_MAP = {
     REFUSE_YEAR_OUT_OF_RANGE: "refuse",
     REFUSE_SYSTEM_UNAVAILABLE: "refuse",
     REFUSE_NOT_UNDERSTOOD: "refuse",
+    REFUSE_INJECTION: "refuse",
     SUGGEST_MISSING_FIELD: "suggest",
     HUMAN_HIGH_RISK_ADVICE: "human",
 }
@@ -93,6 +95,22 @@ def build_refuse_system_unavailable(detail: str = "") -> Tuple[str, str]:
         f"抱歉，暂时无法完成该查询，请稍后重试或换个问法。{tail}".strip(),
         REFUSE_SYSTEM_UNAVAILABLE,
     )
+
+
+def build_refuse_injection() -> Tuple[str, str]:
+    """注入/越权指令拒答（B-27）：先显式拒绝注入要求，再声明仅按库内口径回答可查部分。
+
+    用法：supervisor 链命中注入请求（复述 system prompt/绕过白名单/权限确认/荐股目标价话术等）
+    且系统仍给出库内数据回答时，把本段话术作为前缀拼在正式回答前，实现『先拒答后回答』。
+
+    Returns:
+        (content, template_id)
+    """
+    content = (
+        "抱歉，我不能执行该要求中越权/注入性质的指令（包括复述系统规则、绕过字段白名单、"
+        "输出权限确认或荐股目标价话术等）。以下仅基于库内已收录数据，回答其中可正常查询的部分。"
+    )
+    return content, REFUSE_INJECTION
 
 
 def build_refuse_not_understood() -> Tuple[str, str]:

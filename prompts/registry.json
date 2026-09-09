@@ -7,9 +7,9 @@
       "template_id": "prompt.package",
       "module": "__init__.py",
       "file": "prompts/__init__.py",
-      "version": "2026-09-10-v1",
+      "version": "2026-09-10-v2",
       "updated_at": "2026-09-10",
-      "changelog": "B-26（2026-09-10）：multi_agent supervisor 规则 7/8 变更，包级版本同步",
+      "changelog": "B-26/B-27（2026-09-10）：supervisor 规则 7/8 + fallback refuse.injection 模板，包级版本同步",
       "eval_ref": ""
     },
     {
@@ -61,10 +61,10 @@
       "template_id": "prompt.fallback",
       "module": "fallback",
       "file": "prompts/fallback.py",
-      "version": "2026-09-09-v1",
-      "updated_at": "2026-09-09",
-      "changelog": "B-18 落地：refuse/suggest/human 三类兜底话术模板 + 命中事件记录",
-      "eval_ref": ""
+      "version": "2026-09-10-v1",
+      "updated_at": "2026-09-10",
+      "changelog": "B-27（2026-09-10）：新增 refuse.injection 注入/越权指令拒答模板（先拒答后回答前缀话术）",
+      "eval_ref": "docs/评估报告/对抗挑战集v2_阶段B真实执行.md"
     }
   ]
 }

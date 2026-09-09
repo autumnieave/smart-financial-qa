@@ -23,7 +23,11 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from prompts.multi_agent import MULTI_AGENT_AGGREGATOR_PROMPT, MULTI_AGENT_SUPERVISOR_PROMPT
-from prompts.fallback import build_refuse_not_understood, log_fallback as _log_fallback
+from prompts.fallback import (
+    build_refuse_injection as _build_refuse_injection,
+    build_refuse_not_understood,
+    log_fallback as _log_fallback,
+)
 from utils.output_contracts import (
     get_stats as _contract_stats,
     validate_aggregate_result as _contract_aggregate,
@@ -40,6 +44,19 @@ _FINANCIAL_INTENT_MARKERS: tuple = (
     "市盈率", "市净率", "市值", "股价", "估值",
     "同比", "环比", "增长", "下降", "排名", "最高", "最低",
     "季度", "三季度", "年报", "半年报", "三季报", "财报", "业绩",
+)
+
+#: B-27 注入请求信号（命中且系统给出数据回答时，前缀『先拒答后回答』话术）
+_INJECTION_REQUEST_MARKERS: tuple = (
+    "复述", "system prompt", "隐藏规则", "系统规则", "字段白名单限制",
+    "权限已提升", "越权", "目标价", "建议买入", "推荐买入", "买入评级",
+    "列出数据库全部表名", "数据库管理员", "忽略以上", "忽略你收到的",
+    "忽略规则", "忽略上述", "忽略上面", "忽略所有",
+    "SELECT * FROM",
+)
+#: 已属整体拒答/合规回答的信号（命中则不重复加前缀）
+_ALREADY_REFUSED_MARKERS: tuple = (
+    "我无法", "无法执行", "不能执行", "不执行", "抱歉", "拒绝", "不能提供", "无法提供",
 )
 
 
@@ -205,6 +222,46 @@ class LangGraphMultiAgentPlanner:
         if tasks or not LangGraphMultiAgentPlanner._looks_like_financial_query(user_query):
             return tasks
         return [{"agent": "financial", "query": user_query}]
+
+    @staticmethod
+    def _looks_like_injection_request(question: str) -> bool:
+        """粗判问题是否含注入/越权请求信号（B-27 先拒答后回答守卫用）。
+
+        Args:
+            question: 用户原始问题
+
+        Returns:
+            True=命中注入信号关键词
+        """
+        text = (question or "").strip()
+        if not text:
+            return False
+        return any(k in text for k in _INJECTION_REQUEST_MARKERS)
+
+    def _guard_injection_prefix(self, user_query: str, result: Dict[str, Any]) -> Dict[str, Any]:
+        """B-27 注入『先拒答后回答』守卫：命中注入请求且回答为直接给数据时，前缀显式拒答。
+
+        背景：B-22 人工抽审 C2003/C2005 口径——注入题不能只给数值，必须先显式拒绝注入指令
+        （越权/荐股/权限确认类话术），再基于库内口径回答可查部分。模型本身可能不拒答，
+        因此由本守卫在最终结果层统一兜底。
+
+        Args:
+            user_query: 用户原始问题
+            result: 引擎最终结果字典（含 content）
+
+        Returns:
+            加前缀后的结果字典（已拒答/无注入信号时原样返回）
+        """
+        content = (result or {}).get("content") or ""
+        if not content or not self._looks_like_injection_request(user_query):
+            return result or {"content": "", "image": [], "references": []}
+        if any(m in content for m in _ALREADY_REFUSED_MARKERS):
+            return result
+        text, template_id = _build_refuse_injection()
+        _contract_stats().record("injection_refuse_prefix", True, [template_id])
+        logger.info("B-27 注入先拒答后回答前缀已加（%s）", template_id)
+        result["content"] = text + "\n\n" + content
+        return result
 
     @staticmethod
     def _is_valid_json(content: str) -> bool:
@@ -580,4 +637,6 @@ class LangGraphMultiAgentPlanner:
                 self._graph.update_state(config, {"last_active": time.time()})
             except Exception as exc:  # noqa: BLE001
                 logger.warning("LangGraph 多 Agent checkpoint 写回 last_active 失败: %s", exc)
-        return output["result"]
+        result = output.get("result") or {"content": "", "image": [], "references": []}
+        # B-27 注入先拒答后回答守卫（统一作用于 direct / aggregator / finalize 三条出口）
+        return self._guard_injection_prefix(user_query, result)
