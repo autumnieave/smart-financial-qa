@@ -4,6 +4,9 @@
 2026-08-22 统一收口到本模块；模板以 RAGPipeline 实际运行路径为准。
 """
 
+# 模块级版本号：修改本文件任一 Prompt 文本后递增（prompts/registry.json 同步登记）
+PIPELINE_PROMPT_VERSION = "2026-09-09-v1"
+
 # 多轮澄清：从用户问题中提取过滤字段（pipelines.rag_pipeline._parse_filters_with_llm 使用）
 FILTER_EXTRACT_PROMPT_TEMPLATE = """你是一个金融查询解析助手。请结合对话历史（若有），从用户最新问题中提取以下字段，并以 JSON 格式返回。如果某个字段未提及，则其值为 null。
     

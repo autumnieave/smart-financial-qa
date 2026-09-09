@@ -9,6 +9,9 @@ from typing import Dict, List, Optional
 
 from langchain_core.prompts import ChatPromptTemplate
 
+# 模块级版本号：修改本文件任一 Prompt 文本后递增（prompts/registry.json 同步登记）
+RAG_PROMPT_VERSION = "2026-09-09-v1"
+
 # 唯一模板：手写链路（build_prompt）与 LCEL 链路（build_rag_chat_prompt）同源
 RAG_PROMPT_TEMPLATE = chr(10).join([
     "你是一个专业的金融研究助手，请基于以下参考资料和对话历史回答用户的问题。回答时请保持专业、客观，并在适当位置引用来源。",

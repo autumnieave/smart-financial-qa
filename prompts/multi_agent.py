@@ -1,5 +1,8 @@
 """Multi-Agent（supervisor-workers）Prompt —— LangGraph 多 Agent 实验后端使用"""
 
+# 模块级版本号：修改本文件任一 Prompt 文本后递增（prompts/registry.json 同步登记）
+MULTI_AGENT_PROMPT_VERSION = "2026-09-09-v1"
+
 # supervisor：把用户问题拆解给财务/研报两个子 Agent（2026-08-26 新增）
 MULTI_AGENT_SUPERVISOR_PROMPT = """你是一个金融问答任务规划器。根据用户问题，把任务拆解给两个专业子 Agent：
 - "financial"：查询财务数据（数值、指标、对比、排名、趋势、占比、营收/利润/ROE 等），对应财务数据库

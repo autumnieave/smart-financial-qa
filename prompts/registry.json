@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-09-09",
+  "description": "prompts 模板版本注册表：模块级版本的唯一事实源（B-13，2026-09-09 落地）",
+  "templates": [
+    {
+      "template_id": "prompt.package",
+      "module": "__init__.py",
+      "file": "prompts/__init__.py",
+      "version": "2026-09-06-v1",
+      "updated_at": "2026-09-06",
+      "changelog": "包级版本：prompts 任一模板文本变更时更新（prompts/__init__.py）",
+      "eval_ref": ""
+    },
+    {
+      "template_id": "prompt.agent",
+      "module": "agent",
+      "file": "prompts/agent.py",
+      "version": "2026-09-09-v1",
+      "updated_at": "2026-09-09",
+      "changelog": "首次模块级版本登记（基线，模板文本未变）；Agent 工具调用 System Prompt",
+      "eval_ref": "docs/评估报告/Agent后端同口径对照_原生链路.md"
+    },
+    {
+      "template_id": "prompt.rag",
+      "module": "rag",
+      "file": "prompts/rag.py",
+      "version": "2026-09-09-v1",
+      "updated_at": "2026-09-09",
+      "changelog": "首次模块级版本登记（基线，模板文本未变）；RAG 问答模板，手写/LCEL 同源",
+      "eval_ref": "docs/评估报告/RAG引用核验报告.md"
+    },
+    {
+      "template_id": "prompt.pipeline",
+      "module": "pipeline",
+      "file": "prompts/pipeline.py",
+      "version": "2026-09-09-v1",
+      "updated_at": "2026-09-09",
+      "changelog": "首次模块级版本登记（基线，模板文本未变）；字段提取/摘要/图片检测",
+      "eval_ref": ""
+    },
+    {
+      "template_id": "prompt.multi_agent",
+      "module": "multi_agent",
+      "file": "prompts/multi_agent.py",
+      "version": "2026-09-09-v1",
+      "updated_at": "2026-09-09",
+      "changelog": "首次模块级版本登记（基线，模板文本未变）；supervisor 拆解 + aggregator 汇总",
+      "eval_ref": "docs/评估报告/MultiAgent对照.md"
+    },
+    {
+      "template_id": "prompt.financial",
+      "module": "financial",
+      "file": "prompts/financial.py",
+      "version": "2026-09-06-v8",
+      "updated_at": "2026-09-06",
+      "changelog": "B-12 两步分解后版本：指标标准化 + SQL 生成四段；历史版本见 git log",
+      "eval_ref": "docs/评估报告/端到端复验快照_2026-09.md"
+    }
+  ]
+}

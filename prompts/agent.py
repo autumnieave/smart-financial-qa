@@ -1,5 +1,8 @@
 """Agent 工具调用 System Prompt（agents/planner.py 使用）"""
 
+# 模块级版本号：修改本文件任一 Prompt 文本后递增（prompts/registry.json 同步登记）
+AGENT_PROMPT_VERSION = "2026-09-09-v1"
+
 # 原内联于 agents/planner.py，2026-08-22 Prompt 统一时收口到本模块
 AGENT_SYSTEM_PROMPT = """你是一个金融分析助手，可以使用工具查询财务数据、检索报告和生成图表。
 
