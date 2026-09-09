@@ -30,6 +30,11 @@ from prompts.financial import (
     METRIC_STANDARDIZATION_SYSTEM_PROMPT,
     SQL_GEN_SYSTEM_PROMPT,
 )
+from utils.output_contracts import (
+    get_stats as _contract_stats,
+    validate_metric_plan as _contract_metric,
+    validate_sql_output as _contract_sql,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -367,11 +372,14 @@ def _standardize_metrics(rag: Any, question: str) -> Optional[Dict[str, Any]]:
         )
         plan = _normalize_metric_plan(_parse_metric_json_text(resp.choices[0].message.content or ""))
         if plan is None:
+            _contract_stats().record("metric_plan", False, ["标准化输出 JSON 非法/规整失败（B-17）"])
             logger.warning("原生财务查询：指标标准化 JSON 非法，回退自选路径: %s", str(question)[:80])
             return None
+        _contract_stats().record("metric_plan", True, [])
         logger.info("原生财务查询：指标标准化成功: %s", json.dumps(plan, ensure_ascii=False)[:600])
         return plan
     except Exception as exc:  # noqa: BLE001
+        _contract_stats().record("metric_plan", False, [f"标准化调用异常: {str(exc)[:120]}（B-17）"])
         logger.warning("原生财务查询：指标标准化调用失败，回退自选路径: %s", exc)
         return None
 
@@ -387,6 +395,13 @@ def _generate_sql(
     if metric_plan is None:
         metric_plan = _standardize_metrics(rag, question)
     plan_text = _metric_plan_to_text(metric_plan)
+    fs_enabled = bool(getattr(getattr(rag, "config", None), "AGENT_DYNAMIC_FEWSHOT", False))
+    if fs_enabled:
+        from utils.few_shot_retriever import build_sql_gen_system
+
+        fs_system, fs_examples = build_sql_gen_system(question, metric_plan, enabled=True)
+        if fs_examples:
+            logger.info("原生财务查询：动态 few-shot 命中 %d 条示例（B-16）", len(fs_examples))
     errors: List[str] = []
     for attempt in range(retries + 1):
         user_content = f"重构后的问题: {question}\n指标标准化结果(JSON): {plan_text}"
@@ -396,7 +411,7 @@ def _generate_sql(
             resp = rag.llm_generator.client.chat.completions.create(
                 model=rag.config.LLM_MODEL,
                 messages=[
-                    {"role": "system", "content": SQL_GEN_SYSTEM_PROMPT},
+                    {"role": "system", "content": fs_system if fs_enabled else SQL_GEN_SYSTEM_PROMPT},
                     {"role": "user", "content": user_content},
                 ],
                 temperature=0.1,
@@ -410,6 +425,13 @@ def _generate_sql(
         except Exception as exc:  # noqa: BLE001
             errors.append(f"LLM 调用失败: {exc}")
             continue
+        # 契约闸门（B-17）：危险关键字/非 SELECT/全角标点等格式问题直接拒绝并带错重试
+        sql_res = _contract_sql(sql)
+        if not sql_res.ok:
+            errors.append("格式契约拒绝: " + "；".join(sql_res.errors[:3]))
+            _contract_stats().record("sql_output", False, sql_res.errors)
+            continue
+        _contract_stats().record("sql_output", True, [])
         # 三层防线：静态校验 + MySQL 编译终审
         try:
             from tools.sql_validator import compile_check, validate_sql

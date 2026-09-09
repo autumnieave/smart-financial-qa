@@ -23,6 +23,11 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from prompts.multi_agent import MULTI_AGENT_AGGREGATOR_PROMPT, MULTI_AGENT_SUPERVISOR_PROMPT
+from utils.output_contracts import (
+    get_stats as _contract_stats,
+    validate_aggregate_result as _contract_aggregate,
+    validate_supervisor_output as _contract_supervisor,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -241,6 +246,17 @@ class LangGraphMultiAgentPlanner:
             content = self._call_llm(agg_messages, max_tokens=1800)
         result = self._parse_json_loose(content)
         result = self._merge_results(result, state.get("subtask_results") or {})
+        # B-17 契约闸门：缺 content 等非法汇总结果拒绝透传，替换为兜底文案并记录格式事件
+        agg_res = _contract_aggregate(result)
+        if not agg_res.ok:
+            _contract_stats().record("aggregate_result", False, agg_res.errors)
+            result = {
+                "content": "抱歉，未能生成结构化答案，请补充条件或稍后重试。",
+                "image": result.get("image") or [],
+                "references": result.get("references") or [],
+            }
+        else:
+            _contract_stats().record("aggregate_result", True, [])
         return {"result": result}
 
     def _finalize(self, state: MultiAgentState) -> Dict[str, Any]:
@@ -299,10 +315,14 @@ class LangGraphMultiAgentPlanner:
         return (response.choices[0].message.content or "").strip()
 
     def _parse_tasks(self, content: str) -> Tuple[List[Dict[str, str]], Optional[str]]:
-        """解析 supervisor 输出任务列表；非法 JSON 时退回空任务（走 finalize 兜底）。"""
+        """解析 supervisor 输出任务列表；非法 JSON 时退回空任务（走 finalize 兜底）。
+
+        B-17：每次解析按输出契约记录格式事件（supervisor_tasks），行为不变——
+        空任务仍由路由走 finalize 兜底，坏任务不透传下游。"""
         try:
             obj = json.loads(content)
         except (TypeError, ValueError):
+            _contract_stats().record("supervisor_tasks", False, ["supervisor 输出非 JSON（B-17）"])
             return [], content
         tasks: List[Dict[str, str]] = []
         if isinstance(obj, dict):
@@ -310,12 +330,17 @@ class LangGraphMultiAgentPlanner:
             for t in raw_tasks:
                 if isinstance(t, dict) and t.get("agent") in ("financial", "research") and (t.get("query") or "").strip():
                     tasks.append({"agent": str(t["agent"]), "query": str(t["query"]).strip()})
+            res = _contract_supervisor(obj)
+            _contract_stats().record("supervisor_tasks", res.ok, res.errors)
             return tasks, obj.get("direct_answer")
         if isinstance(obj, list):
             for t in obj:
                 if isinstance(t, dict) and t.get("agent") in ("financial", "research") and (t.get("query") or "").strip():
                     tasks.append({"agent": str(t["agent"]), "query": str(t["query"]).strip()})
+            res = _contract_supervisor(obj)
+            _contract_stats().record("supervisor_tasks", res.ok, res.errors)
             return tasks, None
+        _contract_stats().record("supervisor_tasks", False, ["supervisor 输出结构非法（B-17）"])
         return [], content
 
     def _parse_json_loose(self, content: str) -> Dict[str, Any]:
