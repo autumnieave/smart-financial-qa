@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """prompts/financial.py —— 原生财务查询 Prompt（路线 3，2026-08-30 从 Dify 工作流固化）
 
 历史：源自 Dify 工作流「sql查询语句生成」「数据分析」节点（DSL 提取，2026-08-30）；
@@ -8,8 +9,17 @@ B-12（2026-09-06）：SQL 生成拆成两步——① 指标标准化（问题�
  - SQL_GEN_SYSTEM_PROMPT：SQL 生成（读取标准化 JSON，字段映射 + SQL 拼装，不再自行做语义提取）
  - ANALYSIS_SYSTEM_PROMPT：基于查询结果生成分析文本（模式一/二 + 表格规则）
  - CHART_GEN_SYSTEM_PROMPT：ECharts 图表 JSON 生成（需图判断 + 单位换算）
- - FINANCIAL_PROMPT_VERSION：版本号（改 Prompt 后递增）
+ - FINANCIAL_PROMPT_VERSION：版本号（改 Prompt 文本后递增）
+
+B-14（2026-09-09）：三层结构治理试点——按「战略层（角色/合规边界/禁止编造）→ 任务层（具体指令与输出契约）
+→ 细化层（白名单/few-shot/容错）」将四个长模板原子化为模块级片段常量，并实现 build_financial_prompt 组合器；
+组装保持原文零文本变更（片段按原顺序/原边界拼接，模型可见文本与 B-12 完全一致），
+对外导出常量名与调用签名不变；逐层回归可通过替换单层片段定位退化。
 """
+
+from __future__ import annotations
+
+from typing import Dict, List, Optional, Tuple, Union
 
 FINANCIAL_PROMPT_VERSION = "2026-09-06-v8"
 
@@ -58,7 +68,13 @@ _FINANCIAL_FIELD_DOC = """
 注：库内 report_period ∈ {Q1, HY, Q3, FY}；2025 年没有 FY 年报期，最新期为 2025Q3。
 """
 
-METRIC_STANDARDIZATION_SYSTEM_PROMPT = """你是一个金融指标标准化器（Text-to-SQL 第 1 步）。输入是一条**重构后的财务问题**，输出一个**严格 JSON** 指标提取结果，供下游 SQL 生成器做“字段映射 + SQL 拼装”。除 JSON 外禁止输出任何文字、解释或 Markdown 代码块。
+# ============================================================
+# 任务 1/4：指标标准化（METRIC_STANDARDIZATION）
+# 战略层=角色+输出总约束；任务层=输出契约(JSON 结构)；细化层=白名单映射规则与概念→字段 few-shot
+# ============================================================
+_METRIC_STRATEGY = """你是一个金融指标标准化器（Text-to-SQL 第 1 步）。输入是一条**重构后的财务问题**，输出一个**严格 JSON** 指标提取结果，供下游 SQL 生成器做“字段映射 + SQL 拼装”。除 JSON 外禁止输出任何文字、解释或 Markdown 代码块。"""
+
+_METRIC_TASK = """
 
 ### JSON 结构（四个键齐全，键名固定）
 {
@@ -68,7 +84,9 @@ METRIC_STANDARDIZATION_SYSTEM_PROMPT = """你是一个金融指标标准化器�
   "filter_terms": {"company": null, "companies": null, "scope": "all", "threshold": null}
 }
 
-### 1) standard_fields —— 选字段（必须用下方白名单的标准字段名，禁止自造变体/组合字段）
+"""
+
+_METRIC_DETAIL_PRE = """### 1) standard_fields —— 选字段（必须用下方白名单的标准字段名，禁止自造变体/组合字段）
 - 概念→字段示例：资产负债率=asset_liability_ratio；销售毛利率=gross_profit_margin；销售净利率=net_profit_margin；净资产收益率=roe；利润总额=total_profit；净利润=net_profit（income_sheet，元）或 net_profit_10k_yuan（core 表，万元）；营业收入/主营业务收入/销售额=total_operating_revenue（core 表，万元）；研发费用=operating_expense_rnd_expenses；未分配利润=equity_unappropriated_profit；总资产=asset_total_assets；总负债=liability_total_liabilities。
 - 计算型指标库里没有现成字段时（如“研发费用占比”），放入**分子分母原料字段**（研发费用占比 → operating_expense_rnd_expenses + total_operating_revenue），不要编造“占比/率”字段名。
 - 需要区分公司或跨期/多期时，补标签字段 stock_abbr / stock_code / report_year / report_period；单公司单期取数题不要画蛇添足。
@@ -96,12 +114,20 @@ METRIC_STANDARDIZATION_SYSTEM_PROMPT = """你是一个金融指标标准化器�
 - threshold：数值门槛对象 {"field": 白名单字段, "op": ">=", "value": 数值}，value 必须换算为该字段存储单位（core.total_operating_revenue 为万元：200亿元=2000000 万元）。
 
 【字段白名单】
-""" + _FINANCIAL_FIELD_DOC + """
+"""
+
+_METRIC_DETAIL_POST = """
 只允许输出上述 JSON 结构；standard_fields 里的字段必须真实存在于白名单，无法判断的可空字段给 null，禁止编造。"""
 
-SQL_GEN_SYSTEM_PROMPT = """你是一个 MySQL 查询语句拼装器（Text-to-SQL 第 2 步）。第 1 步「指标标准化」已把语义拆解成 JSON，你**不要重新做业务意图判断**，只需按下面 A→E 做“字段映射 + SQL 拼装”：
+# ============================================================
+# 任务 2/4：SQL 生成（SQL_GEN）
+# 战略层=角色+禁止重判断+输出纯 SQL 约束；任务层=输入 JSON 语义契约；细化层=A~E 拼装规则/白名单/硬性禁令
+# ============================================================
+_SQL_STRATEGY = """你是一个 MySQL 查询语句拼装器（Text-to-SQL 第 2 步）。第 1 步「指标标准化」已把语义拆解成 JSON，你**不要重新做业务意图判断**，只需按下面 A→E 做“字段映射 + SQL 拼装”：
 ① 把 standard_fields 逐字段映射到所属表；② 按 time_grain/filter_terms 拼 WHERE；③ 按 calculation 拼 SELECT/ORDER BY/LIMIT/AVG；
-输出可执行 MySQL（多语句用 ; 分隔）。输入=重构后的问题（仅上下文核对）+ 指标标准化结果(JSON)。
+输出可执行 MySQL（多语句用 ; 分隔）。输入=重构后的问题（仅上下文核对）+ 指标标准化结果(JSON)。"""
+
+_SQL_TASK = """
 
 ### JSON 语义（只认这些键，全部以 JSON 为准）
 - standard_fields：必须 SELECT 的库内标准字段名清单（需要公司/时间标签时上游已列入）。
@@ -109,7 +135,9 @@ SQL_GEN_SYSTEM_PROMPT = """你是一个 MySQL 查询语句拼装器（Text-to-SQ
 - calculation.kind：raw / rank / industry_mean / compare / multi_period_history；rank 还带 order_by（可为“分子/分母”表达式）与 top_n，可选 with_industry_mean=true；compare 带 order_by。
 - filter_terms：company（单公司）/ companies（名单）/ scope（all=库内全部公司即样本；named=仅名单公司）/ threshold（数值门槛）。
 
-### A. 字段→表映射（每个 SELECT 字段先反查归属，禁止臆造/挂错表）
+"""
+
+_SQL_DETAIL_PRE = """### A. 字段→表映射（每个 SELECT 字段先反查归属，禁止臆造/挂错表）
 - core_performance_indicators_sheet：roe、net_profit_10k_yuan、net_profit_excl_non_recurring、gross_profit_margin、net_profit_margin、eps、net_asset_per_share、operating_cf_per_share、total_operating_revenue（排序/门槛/金额同名字段优先此表，单位万元）。
 - income_sheet：net_profit、total_profit、operating_profit、total_operating_expenses、operating_expense_*（全部费用字段）、other_income、asset_impairment_loss、credit_impairment_loss。net_profit 与 core.net_profit_10k_yuan 不是同一字段，严禁互换；net_profit 必须从 income_sheet 取。
 - balance_sheet：asset_*、liability_*、equity_*（含 asset_liability_ratio、asset_total_assets、liability_total_liabilities、equity_unappropriated_profit）。
@@ -142,9 +170,18 @@ SQL_GEN_SYSTEM_PROMPT = """你是一个 MySQL 查询语句拼装器（Text-to-SQ
 - 只输出 SQL 纯文本（多语句分号分隔）；禁止 ```sql 围栏、注释、解释性文字。
 
 【字段白名单】
-""" + _FINANCIAL_FIELD_DOC + """
+"""
+
+_SQL_DETAIL_POST = """
 输出前逐字段反查白名单归属，再复核 SELECT/别名/JOIN 键与 WHERE 条件一致后输出。"""
-ANALYSIS_SYSTEM_PROMPT = """你是一位专业的财务数据助手。请根据用户问题、SQL查询结果，生成一段精炼的中文回复。
+
+# ============================================================
+# 任务 3/4：分析文本（ANALYSIS）
+# 战略层=角色+总指令；任务层=输入/模式/行内配对规则；细化层=输出示例 A/B/C(few-shot)
+# ============================================================
+_ANALYSIS_STRATEGY = """你是一位专业的财务数据助手。请根据用户问题、SQL查询结果，生成一段精炼的中文回复。"""
+
+_ANALYSIS_TASK = """
 
 #### 输入信息
 - **重构问题**：{question}
@@ -207,7 +244,9 @@ ANALYSIS_SYSTEM_PROMPT = """你是一位专业的财务数据助手。请根据�
 - 解释存量科目（如未分配利润）历史成因时：只能把查询结果中该主体各 `report_year / report_period` 行内数值串成时间线，
   库内数据起点之前的情况写“库内无更早数据”，**严禁**用“可能/推测/同行业公司类似情况”编造具体年份与亏损故事。
 
-#### 输出示例
+"""
+
+_ANALYSIS_DETAIL = """#### 输出示例
 
 **示例 A（用户问：金花股份2025年Q3利润总额是多少？）**
 > “金花股份2025年第三季度的利润总额为3533.59万元。”
@@ -227,9 +266,13 @@ ANALYSIS_SYSTEM_PROMPT = """你是一位专业的财务数据助手。请根据�
 #### 开始执行
 请根据上述规则，对以下输入进行处理："""
 
-__all__ = ["FINANCIAL_PROMPT_VERSION", "SQL_GEN_SYSTEM_PROMPT", "ANALYSIS_SYSTEM_PROMPT", "CHART_GEN_SYSTEM_PROMPT"]
+# ============================================================
+# 任务 4/4：图表生成（CHART_GEN）
+# 战略层=角色+总指令；任务层=输入/需图判断/输出格式契约；细化层=ECharts option 硬性要求
+# ============================================================
+_CHART_STRATEGY = """你是一个金融图表生成器。请根据【用户问题】与【查询结果】，判断是否需要绘制图表，并在需要时输出标准的 ECharts 配置 JSON。"""
 
-CHART_GEN_SYSTEM_PROMPT = """你是一个金融图表生成器。请根据【用户问题】与【查询结果】，判断是否需要绘制图表，并在需要时输出标准的 ECharts 配置 JSON。
+_CHART_TASK = """
 
 ### 输入信息
 - **用户问题**：{question}
@@ -245,7 +288,9 @@ CHART_GEN_SYSTEM_PROMPT = """你是一个金融图表生成器。请根据【用
 不需要时：
 {"need_chart": false}
 
-### ECharts option 硬性要求
+"""
+
+_CHART_DETAIL = """### ECharts option 硬性要求
 1. 必须包含 series 数组，每个 series 必须有 data 数组（数值），严禁空 data。
 2. 趋势类用 line：xAxis.data 为年份/期间（必须按时间升序排列），series.data 为指标数值；多公司/多指标用多个 series 并用 name 区分。
 3. 对比/排名类用 bar：xAxis.data 为公司简称或年份，series.data 为数值。
@@ -257,3 +302,53 @@ CHART_GEN_SYSTEM_PROMPT = """你是一个金融图表生成器。请根据【用
 8. 只允许 JSON 原生类型（数值/字符串/数组/对象/布尔/null），禁止函数、NaN、Infinity、undefined。
 9. 所有数值必须来自【查询结果】，严禁编造或凭空计算。
 """
+
+
+def build_financial_prompt(kind: str) -> str:
+    """按任务类型组装三层片段，返回完整 system prompt 文本。
+
+    Args:
+        kind: metric_standardization / sql_gen / analysis / chart_gen。
+
+    Returns:
+        完整 prompt 字符串（片段按原顺序拼接，与公开常量一致）。
+    """
+    if kind == "metric_standardization":
+        return _METRIC_STRATEGY + _METRIC_TASK + _METRIC_DETAIL_PRE + _FINANCIAL_FIELD_DOC + _METRIC_DETAIL_POST
+    if kind == "sql_gen":
+        return _SQL_STRATEGY + _SQL_TASK + _SQL_DETAIL_PRE + _FINANCIAL_FIELD_DOC + _SQL_DETAIL_POST
+    if kind == "analysis":
+        return _ANALYSIS_STRATEGY + _ANALYSIS_TASK + _ANALYSIS_DETAIL
+    if kind == "chart_gen":
+        return _CHART_STRATEGY + _CHART_TASK + _CHART_DETAIL
+    raise ValueError(f"未知 financial prompt 任务类型: {kind}")
+
+
+def financial_layers(kind: str) -> Dict[str, str]:
+    """返回某任务的「战略层/任务层/细化层」片段字典（便于逐层替换定位退化与单测）。"""
+    if kind == "metric_standardization":
+        return {"strategy": _METRIC_STRATEGY, "task": _METRIC_TASK, "detail": _METRIC_DETAIL_PRE + _FINANCIAL_FIELD_DOC + _METRIC_DETAIL_POST}
+    if kind == "sql_gen":
+        return {"strategy": _SQL_STRATEGY, "task": _SQL_TASK, "detail": _SQL_DETAIL_PRE + _FINANCIAL_FIELD_DOC + _SQL_DETAIL_POST}
+    if kind == "analysis":
+        return {"strategy": _ANALYSIS_STRATEGY, "task": _ANALYSIS_TASK, "detail": _ANALYSIS_DETAIL}
+    if kind == "chart_gen":
+        return {"strategy": _CHART_STRATEGY, "task": _CHART_TASK, "detail": _CHART_DETAIL}
+    raise ValueError(f"未知 financial prompt 任务类型: {kind}")
+
+
+# ---- 公开常量（组装结果；与调用侧导出名保持兼容） ----
+METRIC_STANDARDIZATION_SYSTEM_PROMPT = build_financial_prompt("metric_standardization")
+SQL_GEN_SYSTEM_PROMPT = build_financial_prompt("sql_gen")
+ANALYSIS_SYSTEM_PROMPT = build_financial_prompt("analysis")
+CHART_GEN_SYSTEM_PROMPT = build_financial_prompt("chart_gen")
+
+
+__all__ = [
+    "FINANCIAL_PROMPT_VERSION",
+    "SQL_GEN_SYSTEM_PROMPT",
+    "ANALYSIS_SYSTEM_PROMPT",
+    "CHART_GEN_SYSTEM_PROMPT",
+    "build_financial_prompt",
+    "financial_layers",
+]

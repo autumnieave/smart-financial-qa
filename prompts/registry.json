@@ -54,7 +54,7 @@
       "file": "prompts/financial.py",
       "version": "2026-09-06-v8",
       "updated_at": "2026-09-06",
-      "changelog": "B-12 两步分解后版本：指标标准化 + SQL 生成四段；历史版本见 git log",
+      "changelog": "B-12 两步分解后版本：指标标准化 + SQL 生成四段；B-14 三层结构治理（片段常量 + build_financial_prompt 组合器，组装零文本变更，版本未 bump）",
       "eval_ref": "docs/评估报告/端到端复验快照_2026-09.md"
     },
     {
