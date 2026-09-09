@@ -124,7 +124,7 @@ def cmd_citation(args: argparse.Namespace) -> int:
 
 
 def cmd_challenge(args: argparse.Namespace) -> int:
-    """challenge：对抗挑战集 v2 子集预览（阶段 A：结构校验/子集输出；阶段 B：真实执行）"""
+    """challenge：对抗挑战集 v2（阶段 A：子集预览；阶段 B：--run 接通真实 Agent 引擎）"""
     from eval import challenge as challenge_mod
 
     golden = challenge_mod.load_challenge(args.version)
@@ -135,15 +135,23 @@ def cmd_challenge(args: argparse.Namespace) -> int:
             print(f"未知类别: {unknown}")
             return 2
         items = [it for it in items if it["类别"] in args.categories]
+    if args.only:
+        items = [it for it in items if it["编号"] in args.only]
     if args.limit:
         items = items[: args.limit]
+    if args.run:
+        if not items:
+            print("无可执行条目（检查 --categories/--only/--limit）")
+            return 2
+        from eval import challenge_run
+        return challenge_run.execute_items(items)
     print(f"挑战集 {args.version}（kind=challenge）：快照共 {golden['counts']['questions']} 条 / 五类通过标准：")
     for cat, crit in challenge_mod.category_pass_criteria().items():
         print(f"  - {cat}: {crit}")
     print(f"\n本次子集 {len(items)} 条：")
     for it in items:
         print(f"  {it['编号']} [{it['类别标签']}] {it['问题'][:70]}")
-    print("\n[阶段 A] 未执行真实调用（真实执行需放行阶段 B：接通 Agent 引擎 + 人工抽审 ≥30%）。")
+    print("\n[阶段 A 预览] 未执行真实调用；真实执行加 --run（接通 Agent 引擎 + 人工抽审 ≥30%）。")
     return 0
 
 
@@ -226,7 +234,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_retr.add_argument("--match", choices=["raw", "comma", "loose"], default="comma", help="数字匹配口径")
     p_retr.add_argument("--rrf-k", type=int, default=0, help="RRF 常数（0=取配置）")
     p_retr.add_argument("--topk-bm25", type=int, default=0, help="BM25 路召回量（0=取配置）")
-    p_retr.add_argument("--vector-floor-ratio", type=float, default=-1.0, help="向量路保底比例（-1=取配置，0=纯RRF）")
+    p_retr.add_argument("--vector-floor-ratio", type=float, default=-1.0, help="向量路保底比例（-1=取配置，0=纯RRF）")
+
     p_retr.add_argument("--rerank-top-n", type=int, default=0, help="对 top-K 候选做 Rerank 复排并统计精排后 top-N 命中（0=不开启）")
     p_retr.add_argument("--out", default="docs/检索对比报告.md", help="markdown 报告路径")
     p_retr.add_argument("--json-out", default="训练结果数据/retrieval_cmp.json", help="JSON 明细路径")
@@ -236,8 +245,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_chal.add_argument("--version", default="v2", help="挑战集版本（默认 v2）")
     p_chal.add_argument("--categories", nargs="+", default=None,
                         help="类别过滤（prompt_injection/out_of_boundary/typo_robustness/binding_entrapment/hallucination_entrapment）")
+    p_chal.add_argument("--only", nargs="+", default=None, help="只执行指定编号（如 C2001 C2006）")
     p_chal.add_argument("--limit", type=int, default=0, help="只取前 N 条（预览/冒烟）")
-    p_chal.add_argument("--dry-run", action="store_true", help="阶段 A：仅预览子集，不执行真实调用")
+    p_chal.add_argument("--run", action="store_true", help="阶段 B：接通真实 Agent 引擎逐条执行 + 判定 + 抽审报告")
+    p_chal.add_argument("--dry-run", action="store_true", help="阶段 A：仅预览子集，不执行真实调用（默认）")
     p_chal.set_defaults(func=cmd_challenge)
 
     p_rep = sub.add_parser("report", help="聚合最新证据生成评估报告")
