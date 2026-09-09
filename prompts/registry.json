@@ -1,15 +1,15 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-09-09",
+  "updated_at": "2026-09-10",
   "description": "prompts 模板版本注册表：模块级版本的唯一事实源（B-13，2026-09-09 落地）",
   "templates": [
     {
       "template_id": "prompt.package",
       "module": "__init__.py",
       "file": "prompts/__init__.py",
-      "version": "2026-09-09-v2",
-      "updated_at": "2026-09-09",
-      "changelog": "B-18 新增 prompts/fallback.py 兜底话术模块（包级版本同步 v2）",
+      "version": "2026-09-10-v1",
+      "updated_at": "2026-09-10",
+      "changelog": "B-26（2026-09-10）：multi_agent supervisor 规则 7/8 变更，包级版本同步",
       "eval_ref": ""
     },
     {
@@ -43,10 +43,10 @@
       "template_id": "prompt.multi_agent",
       "module": "multi_agent",
       "file": "prompts/multi_agent.py",
-      "version": "2026-09-09-v1",
-      "updated_at": "2026-09-09",
-      "changelog": "首次模块级版本登记（基线，模板文本未变）；supervisor 拆解 + aggregator 汇总",
-      "eval_ref": "docs/评估报告/MultiAgent对照.md"
+      "version": "2026-09-10-v1",
+      "updated_at": "2026-09-10",
+      "changelog": "B-26（2026-09-10）：supervisor 规则 7/8——先派 financial 查库核验、未查库前禁止断言未披露/不存在；注入/越界话术不得连带拒答可查子问题",
+      "eval_ref": "docs/评估报告/MultiAgent对照.md; docs/评估报告/对抗挑战集v2_阶段B真实执行.md"
     },
     {
       "template_id": "prompt.financial",

@@ -32,6 +32,16 @@ from utils.output_contracts import (
 
 logger = logging.getLogger(__name__)
 
+#: B-26 财务查询意图关键词（supervisor 空任务兜底路由用；粗粒度宁多勿漏——查无数据由财务侧标准拒答兜底）
+_FINANCIAL_INTENT_MARKERS: tuple = (
+    "营收", "营业收入", "收入", "净利润", "净利", "利润总额", "利润",
+    "研发费用", "毛利率", "净利率", "每股", "EPS", "净资产", "ROE",
+    "资产负债率", "负债", "现金流", "货币资金", "存货", "应收账款",
+    "市盈率", "市净率", "市值", "股价", "估值",
+    "同比", "环比", "增长", "下降", "排名", "最高", "最低",
+    "季度", "三季度", "年报", "半年报", "三季报", "财报", "业绩",
+)
+
 
 class MultiAgentState(TypedDict, total=False):
     """多 Agent 协作状态：任务列表 / 子结果 / 最终结果。"""
@@ -150,10 +160,51 @@ class LangGraphMultiAgentPlanner:
             logger.info("supervisor 快速模型输出非法 JSON，回退主模型重试")
             content = self._call_llm(state["messages"], max_tokens=500)
             tasks, _direct = self._parse_tasks(content)
+        # B-26 兜底：supervisor 仍无任务但问题带财务意图 → 强制补派 financial 单任务，
+        # 先由财务子 Agent 查库核验，避免未经查库就 finalize 断言“数据未披露/不存在”。
+        tasks = self._ensure_financial_task(state["user_query"], tasks)
         return {
             "tasks": tasks,
             "messages": state["messages"] + [{"role": "assistant", "content": content}],
         }
+
+    @staticmethod
+    def _looks_like_financial_query(question: str) -> bool:
+        """粗判问题是否带财务数据查询意图（B-26 兜底路由用）。
+
+        只判断“是否值得让财务子 Agent 查库一次”，不做精确语义识别；
+        关键词命中可能误报，由财务侧查库后的标准拒答话术兜底。
+
+        Args:
+            question: 用户原始问题
+
+        Returns:
+            True=带财务意图关键词（指标/期间/对比/公司财务类）
+        """
+        text = (question or "").strip()
+        if not text:
+            return False
+        return any(k in text for k in _FINANCIAL_INTENT_MARKERS)
+
+    @staticmethod
+    def _ensure_financial_task(user_query: str, tasks: List[Dict[str, str]]) -> List[Dict[str, str]]:
+        """supervisor 未拆任务且问题带财务意图时，强制补派一个 financial 单任务（B-26）。
+
+        背景：supervisor 对“注入包装 + 库内财务子问题”可能误判为无任务并直接 finalize
+        拒答（如 C2001 “数据未披露”式误拒答，理由与库内事实不符）。本兜底把原始问题交给
+        财务子 Agent 查库核验：可查则返回库内真实数据，查无则由财务侧输出标准拒答话术。
+
+        Args:
+            user_query: 用户原始问题
+            tasks: supervisor 已拆出的任务列表（可能为空）
+
+        Returns:
+            补派后的任务列表（已有任务/无财务意图时原样返回）
+        """
+        tasks = list(tasks or [])
+        if tasks or not LangGraphMultiAgentPlanner._looks_like_financial_query(user_query):
+            return tasks
+        return [{"agent": "financial", "query": user_query}]
 
     @staticmethod
     def _is_valid_json(content: str) -> bool:
