@@ -55,7 +55,13 @@ def cmd_golden_list(args: argparse.Namespace) -> int:
         return 0
     for v in versions:
         c = v["counts"]
-        print(f"{v['version']:<8} {v['created_at']}  {v['tag']}  [{c['questions']}题/{c['sub_questions']}子问题/{c['sql_statements']}句]")
+        kind = v.get("kind", "sql")
+        if kind == "challenge" or "sql_statements" not in c:
+            types = v.get("types") or {}
+            n_cat = c.get("categories", len(types))
+            print(f"{v['version']:<8} {v['created_at']}  {v['tag']}  [{kind} {c.get('questions', '?')} 题/{n_cat} 类]")
+        else:
+            print(f"{v['version']:<8} {v['created_at']}  {v['tag']}  [{c['questions']}题/{c['sub_questions']}子问题/{c['sql_statements']}句]")
     return 0
 
 
@@ -117,6 +123,30 @@ def cmd_citation(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_challenge(args: argparse.Namespace) -> int:
+    """challenge：对抗挑战集 v2 子集预览（阶段 A：结构校验/子集输出；阶段 B：真实执行）"""
+    from eval import challenge as challenge_mod
+
+    golden = challenge_mod.load_challenge(args.version)
+    items = golden["items"]
+    if args.categories:
+        unknown = [c for c in args.categories if c not in challenge_mod.JUDGE_TYPE]
+        if unknown:
+            print(f"未知类别: {unknown}")
+            return 2
+        items = [it for it in items if it["类别"] in args.categories]
+    if args.limit:
+        items = items[: args.limit]
+    print(f"挑战集 {args.version}（kind=challenge）：快照共 {golden['counts']['questions']} 条 / 五类通过标准：")
+    for cat, crit in challenge_mod.category_pass_criteria().items():
+        print(f"  - {cat}: {crit}")
+    print(f"\n本次子集 {len(items)} 条：")
+    for it in items:
+        print(f"  {it['编号']} [{it['类别标签']}] {it['问题'][:70]}")
+    print("\n[阶段 A] 未执行真实调用（真实执行需放行阶段 B：接通 Agent 引擎 + 人工抽审 ≥30%）。")
+    return 0
+
+
 def cmd_retrieval(args: argparse.Namespace) -> int:
     """retrieval：检索层对比（纯向量 vs 混合，引用命中），委托 eval.retrieval_cmp"""
     from eval import retrieval_cmp
@@ -137,7 +167,8 @@ def cmd_retrieval(args: argparse.Namespace) -> int:
 def cmd_report(args: argparse.Namespace) -> int:
     """report：聚合最新证据生成评估报告"""
     versions = golden_mod.list_versions()
-    golden = golden_mod.load_golden(versions[-1]["version"]) if versions else None
+    sql_versions = [v for v in versions if v.get("kind", "sql") != "challenge"]
+    golden = golden_mod.load_golden(sql_versions[-1]["version"]) if sql_versions else None
     report = metrics_mod.build_report(
         golden=golden,
         sql_full=metrics_mod.sql_metrics(metrics_mod.SQL_FULL_SUMMARY),
@@ -200,6 +231,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_retr.add_argument("--out", default="docs/检索对比报告.md", help="markdown 报告路径")
     p_retr.add_argument("--json-out", default="训练结果数据/retrieval_cmp.json", help="JSON 明细路径")
     p_retr.set_defaults(func=cmd_retrieval)
+
+    p_chal = sub.add_parser("challenge", help="对抗挑战集 v2（提示注入/越界/错别字/绑定/幻觉）")
+    p_chal.add_argument("--version", default="v2", help="挑战集版本（默认 v2）")
+    p_chal.add_argument("--categories", nargs="+", default=None,
+                        help="类别过滤（prompt_injection/out_of_boundary/typo_robustness/binding_entrapment/hallucination_entrapment）")
+    p_chal.add_argument("--limit", type=int, default=0, help="只取前 N 条（预览/冒烟）")
+    p_chal.add_argument("--dry-run", action="store_true", help="阶段 A：仅预览子集，不执行真实调用")
+    p_chal.set_defaults(func=cmd_challenge)
 
     p_rep = sub.add_parser("report", help="聚合最新证据生成评估报告")
     p_rep.add_argument("--out", default="docs/评估报告.md", help="输出路径（默认 docs/评估报告.md）")

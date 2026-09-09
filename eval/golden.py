@@ -5,8 +5,15 @@ golden set = 评估基准题库（问题 + 参考答案 SQL），版本化快照
 - database/golden/manifest.json：版本注册表（版本号/标签/来源/哈希/计数/快照路径）
 - database/golden/{version}_{date}.json：不可变快照（题目 + 参考答案，供回归对比）
 
-源数据：训练结果数据/result_3_parallel.xlsx（80 题 / 108 子问题 / 291 句，B 题全量基线）。
-快照在 init 时固化来源文件 sha256，后续可用 verify 校验源是否被改动。
+两种题库形态：
+- SQL 基线题（v1）：源为 训练结果数据/result_3_parallel.xlsx（80 题 / 108 子问题 / 291 句），
+  由 init_golden() 从 xlsx 固化；
+- 对抗挑战题（v2，B-22）：源为 database/golden/challenge_sources/*.json（提示注入/越界/错别字/
+  绑定诱饵/幻觉诱饵，§6.7.4 五类），由 init_challenge_golden() 固化，条目含准入 checklist 字段
+  （复现路径/期望行为/类别/台账编号/通过标准，§6.5.2 口径）。
+
+快照在 init 时固化来源文件 sha256，后续可用 verify 校验源是否被改动；manifest 条目 kind 区分
+"sql"（默认）/ "challenge"。
 """
 
 from __future__ import annotations
@@ -93,6 +100,121 @@ def _split_sql_statements(items: List[Dict[str, Any]]) -> List[str]:
     return stmts
 
 
+#: v2 挑战集允许的五类（与设计方案 §6.7.4 对齐）
+CHALLENGE_CATEGORIES: tuple = (
+    "prompt_injection",       # 提示注入
+    "out_of_boundary",        # 越界年份/主体
+    "typo_robustness",        # 错别字/口语
+    "binding_entrapment",     # 多跳绑定/行序错位诱饵
+    "hallucination_entrapment",  # 幻觉诱饵
+)
+#: 挑战条目必填字段（准入 checklist，§6.5.2）
+CHALLENGE_REQUIRED_FIELDS: tuple = (
+    "编号", "类别", "类别标签", "台账编号", "问题",
+    "期望行为", "通过标准", "断言", "复现路径",
+)
+
+
+def parse_challenge_json(source: Path) -> Dict[str, Any]:
+    """解析对抗挑战集源 JSON，返回快照结构（含结构校验）。
+
+    源结构: {"meta": {...}, "items": [{编号/类别/类别标签/台账编号/问题/期望行为/通过标准/断言/复现路径/准入}]}
+
+    Args:
+        source: 挑战集源 JSON 路径
+
+    Returns:
+        {"kind": "challenge", "counts": {...}, "types": {...}, "items": [...]}
+
+    Raises:
+        ValueError: 字段缺失 / 编号重复 / 类别不在白名单。
+    """
+    data = json.loads(Path(source).read_text(encoding="utf-8"))
+    raw_items = data.get("items") or []
+    items: List[Dict[str, Any]] = []
+    seen: set = set()
+    category_counter: Dict[str, int] = {}
+    for raw in raw_items:
+        missing = [f for f in CHALLENGE_REQUIRED_FIELDS if not raw.get(f)]
+        if missing:
+            raise ValueError(f"挑战条目缺字段: {missing} @ {raw.get('编号') or '?'}")
+        bid = str(raw["编号"])
+        if bid in seen:
+            raise ValueError(f"挑战编号重复: {bid}")
+        seen.add(bid)
+        category = raw["类别"]
+        if category not in CHALLENGE_CATEGORIES:
+            raise ValueError(f"未知挑战类别: {category} @ {bid}")
+        category_counter[category] = category_counter.get(category, 0) + 1
+        item = {
+            "编号": bid,
+            "类别": category,
+            "类别标签": raw["类别标签"],
+            "台账编号": raw["台账编号"],
+            "问题": str(raw["问题"]).strip(),
+            "期望行为": str(raw["期望行为"]).strip(),
+            "通过标准": str(raw["通过标准"]).strip(),
+            "断言": str(raw["断言"]).strip(),
+            "复现路径": str(raw["复现路径"]).strip(),
+            "准入": raw.get("准入") or {},
+        }
+        items.append(item)
+    return {
+        "kind": "challenge",
+        "counts": {"questions": len(items), "categories": len(category_counter)},
+        "types": category_counter,
+        "items": items,
+    }
+
+
+def init_challenge_golden(source: Path, version: str, tag: str = "") -> Path:
+    """固化对抗挑战集版本快照并登记到 manifest（v1 等既有版本不受影响）。
+
+    Args:
+        source: 挑战集源 JSON 路径（database/golden/challenge_sources/）。
+        version: 版本号（如 v2）。
+        tag: 描述标签。
+
+    Returns:
+        快照文件路径
+    """
+    source = Path(source)
+    if not source.is_file():
+        raise FileNotFoundError(f"挑战集源文件不存在: {source}")
+    parsed = parse_challenge_json(source)
+    GOLDEN_DIR.mkdir(parents=True, exist_ok=True)
+    snapshot_name = f"{version}_{date.today().isoformat()}.json"
+    snapshot_path = GOLDEN_DIR / snapshot_name
+    snapshot = {
+        "version": version,
+        "kind": "challenge",
+        "tag": tag or f"{parsed['counts']['questions']} 题对抗挑战集",
+        "created_at": date.today().isoformat(),
+        "source": str(source),
+        "source_sha256": sha256_file(source),
+        "counts": parsed["counts"],
+        "types": parsed["types"],
+        "items": parsed["items"],
+    }
+    snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=1), encoding="utf-8")
+    manifest = load_manifest()
+    entry = {
+        "version": version,
+        "kind": "challenge",
+        "tag": snapshot["tag"],
+        "created_at": snapshot["created_at"],
+        "source": str(source),
+        "source_sha256": snapshot["source_sha256"],
+        "snapshot": str(snapshot_path),
+        "counts": parsed["counts"],
+    }
+    manifest["versions"] = [v for v in manifest["versions"] if v["version"] != version]
+    manifest["versions"].append(entry)
+    manifest["versions"].sort(key=lambda v: v["version"])
+    MANIFEST_PATH.write_text(json.dumps(manifest, ensure_ascii=False, indent=1), encoding="utf-8")
+    return snapshot_path
+
+
 def init_golden(source: Path, version: str, tag: str = "") -> Path:
     """创建 golden set 版本快照并注册到 manifest。
 
@@ -125,6 +247,7 @@ def init_golden(source: Path, version: str, tag: str = "") -> Path:
     manifest = load_manifest()
     entry = {
         "version": version,
+        "kind": "sql",
         "tag": snapshot["tag"],
         "created_at": snapshot["created_at"],
         "source": str(source),
