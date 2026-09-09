@@ -3,6 +3,7 @@
 - prompts/rag.py       RAG 问答（手写链路与 LCEL 链路同源模板）
 - prompts/pipeline.py  多轮澄清字段提取 / 摘要 / 图片检测
 - prompts/agent.py     Agent 工具调用 System Prompt
+- prompts/fallback.py  兜底话术模板（refuse/suggest/human，B-18）
 
 新增 Prompt 一律放本目录；修改 Prompt 文本后请更新 PROMPT_VERSION，
 并在 docs/ARCHITECTURE.md 记录变更。
@@ -21,7 +22,7 @@ from prompts.pipeline import (
 from prompts.agent import AGENT_SYSTEM_PROMPT
 
 # 模板版本：每次修改 prompts 下任意模板文本时递增/更新
-PROMPT_VERSION = "2026-09-06-v1"
+PROMPT_VERSION = "2026-09-09-v2"
 
 __all__ = [
     "PROMPT_VERSION",

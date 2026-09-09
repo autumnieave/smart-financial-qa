@@ -7,9 +7,9 @@
       "template_id": "prompt.package",
       "module": "__init__.py",
       "file": "prompts/__init__.py",
-      "version": "2026-09-06-v1",
-      "updated_at": "2026-09-06",
-      "changelog": "包级版本：prompts 任一模板文本变更时更新（prompts/__init__.py）",
+      "version": "2026-09-09-v2",
+      "updated_at": "2026-09-09",
+      "changelog": "B-18 新增 prompts/fallback.py 兜底话术模块（包级版本同步 v2）",
       "eval_ref": ""
     },
     {
@@ -56,6 +56,15 @@
       "updated_at": "2026-09-06",
       "changelog": "B-12 两步分解后版本：指标标准化 + SQL 生成四段；历史版本见 git log",
       "eval_ref": "docs/评估报告/端到端复验快照_2026-09.md"
+    },
+    {
+      "template_id": "prompt.fallback",
+      "module": "fallback",
+      "file": "prompts/fallback.py",
+      "version": "2026-09-09-v1",
+      "updated_at": "2026-09-09",
+      "changelog": "B-18 落地：refuse/suggest/human 三类兜底话术模板 + 命中事件记录",
+      "eval_ref": ""
     }
   ]
 }

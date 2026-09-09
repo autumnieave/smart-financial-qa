@@ -23,6 +23,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from prompts.multi_agent import MULTI_AGENT_AGGREGATOR_PROMPT, MULTI_AGENT_SUPERVISOR_PROMPT
+from prompts.fallback import build_refuse_not_understood, log_fallback as _log_fallback
 from utils.output_contracts import (
     get_stats as _contract_stats,
     validate_aggregate_result as _contract_aggregate,
@@ -264,7 +265,9 @@ class LangGraphMultiAgentPlanner:
         self._emit("generate")
         content = (state["messages"][-1].get("content") or "").strip() if state.get("messages") else ""
         if not content:
-            return {"result": {"content": "抱歉，无法理解该问题，请补充条件后重试。", "image": [], "references": []}}
+            text, template_id = build_refuse_not_understood()
+            _log_fallback(template_id, detail="finalize_empty_content")
+            return {"result": {"content": text, "image": [], "references": []}}
         try:
             obj = json.loads(content)
             if isinstance(obj, dict) and not obj.get("tasks") and obj.get("direct_answer"):

@@ -35,8 +35,30 @@ from utils.output_contracts import (
     validate_metric_plan as _contract_metric,
     validate_sql_output as _contract_sql,
 )
+from prompts.fallback import (
+    build_human_risk_advice,
+    build_refuse_data_not_found,
+    build_refuse_system_unavailable,
+    log_fallback as _log_fallback,
+)
 
 logger = logging.getLogger(__name__)
+
+#: 分析文本中命中即视为「投资建议类高风险表述」的关键词（B-18 人工兜底）
+_ADVICE_RISK_KEYWORDS: Tuple[str, ...] = (
+    "建议买入", "建议卖出", "买入评级", "卖出评级", "强烈推荐",
+    "推荐买入", "加仓", "减仓", "目标价",
+)
+
+
+def _advice_risk_type(text: str) -> Optional[str]:
+    """检测文本是否含投资建议类表述；命中返回风险类型，否则 None。"""
+    if not text:
+        return None
+    for keyword in _ADVICE_RISK_KEYWORDS:
+        if keyword in text:
+            return "投资建议"
+    return None
 
 
 def _fmt_rows(rows: List[Dict[str, Any]]) -> str:
@@ -704,7 +726,9 @@ def native_financial_query(rag: Any, user_query: str, user_id: str = "default") 
         retries = int(getattr(config, "AGENT_NATIVE_RETRY", 2)) if config else 2
         schema, conn = _load_schema_conn(config)
         if conn is None or schema is None:
-            return json.dumps({"content": "原生财务查询不可用：MySQL schema/连接加载失败。", "image": []})
+            content, _tid = build_refuse_system_unavailable("MySQL schema/连接加载失败")
+            _log_fallback(_tid, detail="mysql_schema_load_failed")
+            return json.dumps({"content": content, "image": []}, ensure_ascii=False)
         # 每个查询使用独立短连接：并行子 Agent/多 tool_call 共享同一 pymysql 连接会触发
         # "Packet sequence number wrong" 等协议错乱（B2040 并行重跑曾复现），此处隔离执行连接。
         run_conn = None
@@ -722,13 +746,26 @@ def native_financial_query(rag: Any, user_query: str, user_id: str = "default") 
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("原生财务查询：独立 MySQL 连接建立失败: %s", exc)
-            return json.dumps({"content": f"原生财务查询不可用：MySQL 连接失败。{exc}", "image": []})
+            content, _tid = build_refuse_system_unavailable(f"MySQL 连接失败：{exc}")
+            _log_fallback(_tid, detail="mysql_connect_failed")
+            return json.dumps({"content": content, "image": []}, ensure_ascii=False)
         try:
             sql, errors = _generate_sql(rag, user_query, schema, run_conn, retries)
             if not sql:
                 detail = "；".join(errors[:3]) if errors else "未知原因"
-                return json.dumps({"content": f"SQL 生成失败（{retries} 次校验未通过）：{detail}", "image": []})
+                content, _tid = build_refuse_system_unavailable(f"SQL 生成经 {retries} 次校验未通过：{detail}")
+                _log_fallback(_tid, detail="sql_gen_failed")
+                return json.dumps({"content": content, "image": []}, ensure_ascii=False)
             rows = _merge_company_rows(_execute_sql(run_conn, sql))
+            if not rows:
+                content, _tid = build_refuse_data_not_found(
+                    subject=user_query, detail="（SQL 已执行成功，但未返回任何数据）"
+                )
+                _log_fallback(_tid, detail="sql_ok_rows_empty")
+                return json.dumps(
+                    {"content": content, "image": [], "sql": sql, "chart_json": None},
+                    ensure_ascii=False,
+                )
             # 分析/图表只依赖查询结果 rows，互不依赖：并行生成，省一次串行 LLM 延迟
             try:
                 from concurrent.futures import ThreadPoolExecutor
@@ -742,6 +779,11 @@ def native_financial_query(rag: Any, user_query: str, user_id: str = "default") 
                 logger.warning("分析/图表并行失败，回退串行: %s", exc)
                 analysis = _generate_analysis(rag, user_query, rows)
                 chart = _generate_chart(rag, user_query, rows)
+            risk_type = _advice_risk_type(analysis)
+            if risk_type:
+                human_note, _tid = build_human_risk_advice(risk_type=risk_type)
+                analysis = f"{analysis}\n\n{human_note}"
+                _log_fallback(_tid, detail="analysis_contained_advice_keyword")
             try:
                 from agents.planner import _append_sql
 
@@ -763,4 +805,6 @@ def native_financial_query(rag: Any, user_query: str, user_id: str = "default") 
                     pass
     except Exception as exc:  # noqa: BLE001
         logger.exception("原生财务查询异常")
-        return json.dumps({"content": f"查询失败: {exc}", "image": []})
+        content, _tid = build_refuse_system_unavailable(f"查询失败：{exc}")
+        _log_fallback(_tid, detail="unexpected_exception")
+        return json.dumps({"content": content, "image": []}, ensure_ascii=False)

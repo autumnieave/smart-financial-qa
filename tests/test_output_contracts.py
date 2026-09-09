@@ -194,3 +194,32 @@ class TestContractStats:
         line = stats.path.read_text(encoding="utf-8").splitlines()[0]
         payload = json.loads(line)
         assert len(payload["errors"]) == 3
+
+# ── 兜底话术事件（B-18 record_fallback） ─────────────────────────────
+class TestContractFallbackStats:
+    def test_record_fallback_and_summary(self, tmp_path) -> None:
+        stats = ContractStats(path=tmp_path / "fb.jsonl", enabled=True)
+        stats.record_fallback("refuse.data_not_found", "refuse", "sql_ok_rows_empty")
+        stats.record_fallback("refuse.data_not_found", "refuse", "sql_ok_rows_empty")
+        stats.record_fallback("suggest.missing_field", "suggest", "clarify_missing_stock_name")
+        s = stats.fallback_summary()
+        assert s == {"refuse.data_not_found": 2, "suggest.missing_field": 1}
+        lines = stats.path.read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 3
+        payload = json.loads(lines[0])
+        assert payload["kind"] == "fallback"
+        assert payload["category"] == "refuse"
+        assert payload["template_id"] == "refuse.data_not_found"
+
+    def test_record_fallback_disabled_no_file(self, tmp_path) -> None:
+        stats = ContractStats(path=tmp_path / "fb.jsonl", enabled=False)
+        stats.record_fallback("human.high_risk_advice", "human", "analysis_advice")
+        assert not stats.path.exists()
+        assert stats.fallback_summary() == {"human.high_risk_advice": 1}
+
+    def test_fallback_does_not_affect_contract_summary(self, tmp_path) -> None:
+        stats = ContractStats(path=tmp_path / "mix.jsonl", enabled=True)
+        stats.record("sql_output", True)
+        stats.record_fallback("refuse.data_not_found", "refuse", "empty")
+        assert stats.summary()["sql_output"]["calls"] == 1
+        assert "fallback" not in stats.summary()

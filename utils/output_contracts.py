@@ -86,6 +86,7 @@ class ContractStats:
         self.enabled = enabled
         self._lock = threading.Lock()
         self._counters: Dict[str, Dict[str, int]] = {}
+        self._fallback: Dict[str, int] = {}
 
     def record(self, kind: str, ok: bool, errors: Optional[List[str]] = None) -> None:
         """记录一次校验事件（ok=False 即一条格式错误事件）。"""
@@ -98,23 +99,39 @@ class ContractStats:
             else:
                 c["fail"] += 1
             if self.enabled:
-                try:
-                    self.path.parent.mkdir(parents=True, exist_ok=True)
-                    with self.path.open("a", encoding="utf-8") as fh:
-                        fh.write(
-                            json.dumps(
-                                {
-                                    "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
-                                    "kind": kind,
-                                    "ok": bool(ok),
-                                    "errors": errs,
-                                },
-                                ensure_ascii=False,
-                            )
-                            + "\n"
-                        )
-                except OSError as exc:  # 落盘失败不影响校验主流程
-                    logger.warning("输出契约统计落盘失败（%s）: %s", self.path, exc)
+                self._append_event(
+                    {"kind": kind, "ok": bool(ok), "errors": errs}
+                )
+
+    def _append_event(self, payload: Dict[str, Any]) -> None:
+        """线程内追加写一条事件到 jsonl（落盘失败不影响校验主流程）。"""
+        event = {"ts": time.strftime("%Y-%m-%d %H:%M:%S"), **payload}
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with self.path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(event, ensure_ascii=False) + "\n")
+        except OSError as exc:  # 落盘失败不影响校验主流程
+            logger.warning("输出契约统计落盘失败（%s）: %s", self.path, exc)
+
+    def record_fallback(self, template_id: str, category: str, detail: str = "") -> None:
+        """记录一次兜底话术命中（B-18）：按 template_id 单调计数，事件落盘 kind=fallback。
+
+        Args:
+            template_id: 命中模板 ID（如 refuse.data_not_found）。
+            category: 兜底类别（refuse / suggest / human）。
+            detail: 命中分支/原因说明（用于分支分布统计）。
+        """
+        with self._lock:
+            self._fallback[template_id] = self._fallback.get(template_id, 0) + 1
+            if self.enabled:
+                self._append_event(
+                    {"kind": "fallback", "category": category, "template_id": template_id, "detail": detail}
+                )
+
+    def fallback_summary(self) -> Dict[str, int]:
+        """汇总各 template_id 的命中次数（兜底分支分布）。"""
+        with self._lock:
+            return dict(sorted(self._fallback.items()))
 
     def summary(self) -> Dict[str, Dict[str, Any]]:
         """汇总各 kind 的调用/通过/失败数，便于打印格式错误率。"""

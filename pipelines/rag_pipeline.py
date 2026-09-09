@@ -30,6 +30,7 @@ from agents.planner import AgentPlanner
 from chains.rag_chain import LangChainRAGChain
 from filters import QueryFilters
 from memory import ClarifyStatus, ConversationState, MemoryStore, create_memory_store
+from prompts.fallback import build_suggest_missing, log_fallback as _log_fallback
 from tools.tools_registry import get_agent_tools
 from core.interfaces import IGenerator, IReranker, IRetriever
 from core.retrievers import BM25Retriever, HandwrittenRetriever, HybridRetriever, LangChainRetriever
@@ -996,7 +997,8 @@ class RAGPipeline:
             question = self._generate_clarify_question(missing)
             self.conversation_state.status = ClarifyStatus.NEED_CLARIFY
             self.conversation_state.clarify_question = question
-            reply = f"🤔 我需要一些额外信息来更准确地回答您的问题。{question}"
+            reply, template_id = build_suggest_missing(list(missing), clarify_question=question)
+            _log_fallback(template_id, detail="clarify_missing_" + ",".join(missing))
             self.conversation_state.history.append({"role": "assistant", "content": reply})
             self._save_conversation(self.conversation_state)
             return reply, False  # 未结束，等待用户补充

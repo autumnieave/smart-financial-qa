@@ -12,6 +12,7 @@ import re
 from pathlib import Path
 
 import prompts.agent
+import prompts.fallback
 import prompts.financial
 import prompts.multi_agent
 import prompts.pipeline
@@ -35,6 +36,7 @@ _EXPECTED = {
     "pipeline": prompts.pipeline.PIPELINE_PROMPT_VERSION,
     "multi_agent": prompts.multi_agent.MULTI_AGENT_PROMPT_VERSION,
     "financial": prompts.financial.FINANCIAL_PROMPT_VERSION,
+    "fallback": prompts.fallback.FALLBACK_PROMPT_VERSION,
 }
 
 
