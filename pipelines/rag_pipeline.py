@@ -908,6 +908,20 @@ class RAGPipeline:
         return self.agent_planner
 
     def agent_query(self, question: str, user_id: str = "default", verbose: bool = True, on_stage: Optional[Callable[[str], None]] = None, on_chunk: Optional[Callable[[str], None]] = None) -> dict:
+        # B-28 错字归一化（Agent 入口统一处理，覆盖 handwritten / langgraph 两后端）：
+        # 在拆解前还原公司简称/指标错字（云白要→云南白药、资产负债绿→资产负债率 等），
+        # 避免 supervisor 先改写错字导致后续无法纠回（C2011 根因）
+        if question and question.strip():
+            try:
+                from tools.typo_normalizer import load_company_abbrs_from_config, normalize_question_typos  # noqa: PLC0415
+
+                names = load_company_abbrs_from_config(self.config)
+                norm_question, fixes = normalize_question_typos(question, names)
+                if fixes:
+                    logger.info("B-28 错字归一化(agent_query 入口): %r -> %r（%s）", question, norm_question, fixes)
+                question = norm_question
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("B-28 错字归一化跳过（不影响主流程）: %s", exc)
         # 按 user_id 加载会话（持久化存储优先；重启后跨进程恢复）
         state = self._load_conversation(user_id)
         self.conversation_state = state
@@ -963,6 +977,20 @@ class RAGPipeline:
         执行一轮对话查询。
         返回: (回复内容, 是否已完成一次完整问答)
         """
+        # B-28 错字归一化（Agent 入口统一处理，覆盖 handwritten / langgraph 两后端）：
+        # 在拆解前还原公司简称/指标错字（云白要→云南白药、资产负债绿→资产负债率 等），
+        # 避免 supervisor 先改写错字导致后续无法纠回（C2011 根因）
+        if question and question.strip():
+            try:
+                from tools.typo_normalizer import load_company_abbrs_from_config, normalize_question_typos  # noqa: PLC0415
+
+                names = load_company_abbrs_from_config(self.config)
+                norm_question, fixes = normalize_question_typos(question, names)
+                if fixes:
+                    logger.info("B-28 错字归一化(agent_query 入口): %r -> %r（%s）", question, norm_question, fixes)
+                question = norm_question
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("B-28 错字归一化跳过（不影响主流程）: %s", exc)
         # 按 user_id 加载会话（持久化存储优先；重启后跨进程恢复）
         state = self._load_conversation(user_id)
         self.conversation_state = state

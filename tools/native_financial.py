@@ -750,7 +750,15 @@ def native_financial_query(rag: Any, user_query: str, user_id: str = "default") 
             _log_fallback(_tid, detail="mysql_connect_failed")
             return json.dumps({"content": content, "image": []}, ensure_ascii=False)
         try:
-            sql, errors = _generate_sql(rag, user_query, schema, run_conn, retries)
+            # B-28 错别字归一化：精简映射（资产负债绿→资产负债率 等）+ 库内公司简称编辑距离纠错
+            # （云白要→云南白药 等），先还原再走指标标准化/SQL 生成，避免按错字查库返回空直接拒答
+            from tools.typo_normalizer import load_company_abbrs, normalize_question_typos  # noqa: PLC0415
+
+            canonical_names = load_company_abbrs(run_conn)
+            query_text, typo_fixes = normalize_question_typos(user_query, canonical_names)
+            if typo_fixes:
+                logger.info("B-28 错字归一化: %r -> %r（%s）", user_query, query_text, typo_fixes)
+            sql, errors = _generate_sql(rag, query_text, schema, run_conn, retries)
             if not sql:
                 detail = "；".join(errors[:3]) if errors else "未知原因"
                 content, _tid = build_refuse_system_unavailable(f"SQL 生成经 {retries} 次校验未通过：{detail}")
@@ -759,7 +767,7 @@ def native_financial_query(rag: Any, user_query: str, user_id: str = "default") 
             rows = _merge_company_rows(_execute_sql(run_conn, sql))
             if not rows:
                 content, _tid = build_refuse_data_not_found(
-                    subject=user_query, detail="（SQL 已执行成功，但未返回任何数据）"
+                    subject=query_text, detail="（SQL 已执行成功，但未返回任何数据）"
                 )
                 _log_fallback(_tid, detail="sql_ok_rows_empty")
                 return json.dumps(
@@ -771,14 +779,14 @@ def native_financial_query(rag: Any, user_query: str, user_id: str = "default") 
                 from concurrent.futures import ThreadPoolExecutor
 
                 with ThreadPoolExecutor(max_workers=2) as _pool:
-                    analysis_f = _pool.submit(_generate_analysis, rag, user_query, rows)
-                    chart_f = _pool.submit(_generate_chart, rag, user_query, rows)
+                    analysis_f = _pool.submit(_generate_analysis, rag, query_text, rows)
+                    chart_f = _pool.submit(_generate_chart, rag, query_text, rows)
                     analysis = analysis_f.result()
                     chart = chart_f.result()
             except Exception as exc:  # noqa: BLE001
                 logger.warning("分析/图表并行失败，回退串行: %s", exc)
-                analysis = _generate_analysis(rag, user_query, rows)
-                chart = _generate_chart(rag, user_query, rows)
+                analysis = _generate_analysis(rag, query_text, rows)
+                chart = _generate_chart(rag, query_text, rows)
             risk_type = _advice_risk_type(analysis)
             if risk_type:
                 human_note, _tid = build_human_risk_advice(risk_type=risk_type)
