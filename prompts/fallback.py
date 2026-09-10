@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 from typing import List, Optional, Tuple
 
-FALLBACK_PROMPT_VERSION = "2026-09-10-v2"  # B-29: 新增 human.research_view_disclaimer 研报观点转述免责
+FALLBACK_PROMPT_VERSION = "2026-09-10-v3"  # B-31: 新增 refuse.metric_out_of_scope 库外指标拒答
 
 #: 模板 ID（固定标识，写入日志/事件通道用于分支统计）
 REFUSE_OUT_OF_SCOPE = "refuse.out_of_scope"
@@ -34,6 +34,7 @@ REFUSE_NOT_UNDERSTOOD = "refuse.not_understood"
 REFUSE_INJECTION = "refuse.injection"  # B-27 注入指令拒答（先拒答后回答）
 SUGGEST_MISSING_FIELD = "suggest.missing_field"
 HUMAN_HIGH_RISK_ADVICE = "human.high_risk_advice"
+REFUSE_METRIC_OUT_OF_SCOPE = "refuse.metric_out_of_scope"  # B-31 库内未收录该指标（库外口径）
 HUMAN_RESEARCH_VIEW_DISCLAIMER = "human.research_view_disclaimer"  # B-29 研报预测/评级转述免责
 
 #: 模板 ID → 兜底类别（refuse / suggest / human）
@@ -44,6 +45,7 @@ _CATEGORY_MAP = {
     REFUSE_SYSTEM_UNAVAILABLE: "refuse",
     REFUSE_NOT_UNDERSTOOD: "refuse",
     REFUSE_INJECTION: "refuse",
+    REFUSE_METRIC_OUT_OF_SCOPE: "refuse",
     SUGGEST_MISSING_FIELD: "suggest",
     HUMAN_HIGH_RISK_ADVICE: "human",
     HUMAN_RESEARCH_VIEW_DISCLAIMER: "human",
@@ -63,6 +65,29 @@ def build_refuse_out_of_scope(reason: str = "") -> Tuple[str, str]:
         f"请换个问题再试。{tail}"
     )
     return content.strip(), REFUSE_OUT_OF_SCOPE
+
+
+def build_refuse_metric_out_of_scope(metrics: Optional[List[str]] = None) -> Tuple[str, str]:
+    """库外指标拒答（B-31）：问题索要的指标不在库内白名单时，说明覆盖范围并给可查示例。
+
+    用法：指标标准化标注 unsupported_metrics，或 SQL 生成因「无可用字段/字段不存在」失败时，
+    直接走本模板——不给技术性报错，也不做近似字段替换。
+
+    Args:
+        metrics: 用户口中索要但库内无对应字段的指标名（可选）
+
+    Returns:
+        (content, template_id)
+    """
+    names = "、".join([m for m in (metrics or []) if m][:5])
+    what = f"「{names}」" if names else "该指标"
+    content = (
+        f"抱歉，库内暂未收录{what}。当前可查询的是入库上市公司财报表中的财务指标，"
+        "例如营业收入、净利润、利润总额、资产负债率、销售毛利率、净资产收益率、研发费用等；"
+        "股票行情类（股价、总市值、成交量、换手率）与经营类口径（门店数量、电商 GMV 等）不在覆盖范围内。"
+        "请改用上述财务指标再问一次。"
+    )
+    return content, REFUSE_METRIC_OUT_OF_SCOPE
 
 
 def build_refuse_data_not_found(subject: str = "", detail: str = "") -> Tuple[str, str]:

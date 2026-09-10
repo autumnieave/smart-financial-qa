@@ -13,6 +13,7 @@ from prompts.fallback import (
     FALLBACK_PROMPT_VERSION,
     HUMAN_HIGH_RISK_ADVICE,
     REFUSE_DATA_NOT_FOUND,
+    REFUSE_METRIC_OUT_OF_SCOPE,
     REFUSE_NOT_UNDERSTOOD,
     REFUSE_OUT_OF_SCOPE,
     REFUSE_SYSTEM_UNAVAILABLE,
@@ -20,6 +21,7 @@ from prompts.fallback import (
     SUGGEST_MISSING_FIELD,
     build_human_risk_advice,
     build_refuse_data_not_found,
+    build_refuse_metric_out_of_scope,
     build_refuse_not_understood,
     build_refuse_out_of_scope,
     build_refuse_system_unavailable,
@@ -127,3 +129,33 @@ class TestFallbackLogging:
         stats = ContractStats(path=tmp_path / "off.jsonl", enabled=False)
         log_fallback(REFUSE_NOT_UNDERSTOOD, stats=stats)
         assert not stats.path.exists()
+
+
+# ── B-31 库外指标拒答 ───────────────────────────────────────────────────
+
+
+def test_metric_out_of_scope_template_mentions_metrics_and_examples() -> None:
+    content, tid = build_refuse_metric_out_of_scope(["股价", "总市值"])
+    assert tid == REFUSE_METRIC_OUT_OF_SCOPE
+    assert template_category(tid) == "refuse"
+    assert "股价、总市值" in content
+    assert "营业收入" in content  # 给出可查指标示例
+    assert "不在覆盖范围内" in content
+
+
+def test_metric_out_of_scope_template_without_names() -> None:
+    content, tid = build_refuse_metric_out_of_scope(None)
+    assert tid == REFUSE_METRIC_OUT_OF_SCOPE
+    assert "该指标" in content
+
+
+def test_sql_failure_reply_routes_field_errors_to_out_of_scope() -> None:
+    """字段/白名单类失败 → 库外指标话术；格式类失败 → 不含技术堆栈的系统提示。"""
+    from tools.native_financial import _sql_failure_reply
+
+    content, tid = _sql_failure_reply(["格式契约拒绝: 语句首关键字非法: 无可用字段生成"])
+    assert tid == REFUSE_METRIC_OUT_OF_SCOPE
+
+    content2, tid2 = _sql_failure_reply(["格式契约拒绝: 包含全角标点（MySQL 不识别）"])
+    assert tid2 == REFUSE_SYSTEM_UNAVAILABLE
+    assert "全角" not in content2 and "契约" not in content2

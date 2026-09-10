@@ -20,8 +20,9 @@ _TASKS = {
 }
 
 
-def test_version_unchanged_from_b12() -> None:
-    assert fin.FINANCIAL_PROMPT_VERSION == "2026-09-06-v8"
+def test_version_bumped_for_b31() -> None:
+    """B-31 指标标准化契约新增 unsupported_metrics，版本随之 bump（v8 → v9）。"""
+    assert fin.FINANCIAL_PROMPT_VERSION == "2026-09-10-v9"
 
 
 def test_build_equals_public_constants() -> None:

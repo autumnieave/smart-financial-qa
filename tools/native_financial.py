@@ -38,6 +38,7 @@ from utils.output_contracts import (
 from prompts.fallback import (
     build_human_risk_advice,
     build_refuse_data_not_found,
+    build_refuse_metric_out_of_scope,
     build_refuse_system_unavailable,
     log_fallback as _log_fallback,
 )
@@ -49,6 +50,49 @@ _ADVICE_RISK_KEYWORDS: Tuple[str, ...] = (
     "建议买入", "建议卖出", "买入评级", "卖出评级", "强烈推荐",
     "推荐买入", "加仓", "减仓", "目标价",
 )
+
+
+#: SQL 生成失败错误中命中即视为「库内无对应字段/指标」的信号（B-31 → 走库外指标话术）
+_FIELD_ERROR_MARKERS: Tuple[str, ...] = (
+    "无可用字段", "字段不存在", "Unknown column", "白名单", "字段-表归属", "字段不属于",
+)
+
+
+def unsupported_metrics_of(metric_plan: Optional[Dict[str, Any]]) -> List[str]:
+    """取指标标准化标注的「库外指标」列表（B-31）；无标注返回空列表。
+
+    Args:
+        metric_plan: _standardize_metrics 的输出（可为 None）
+
+    Returns:
+        用户索要但库内无对应字段的指标名列表
+    """
+    if not isinstance(metric_plan, dict):
+        return []
+    raw = metric_plan.get("unsupported_metrics")
+    if not isinstance(raw, list):
+        return []
+    return [str(x).strip() for x in raw if isinstance(x, str) and str(x).strip()]
+
+
+def _sql_failure_reply(errors: List[str]) -> Tuple[str, str]:
+    """SQL 生成失败 → 用户可见话术（技术明细只进日志/事件通道，B-31）。
+
+    字段/白名单类失败按「库内未收录该指标」回复（与 unsupported_metrics 同一出口），
+    其余失败给不含技术堆栈的短因由。
+
+    Args:
+        errors: _generate_sql 返回的错误列表
+
+    Returns:
+        (content, template_id)
+    """
+    joined = "；".join(errors or [])
+    if any(m in joined for m in _FIELD_ERROR_MARKERS):
+        return build_refuse_metric_out_of_scope(None)
+    if "全角标点" in joined or "契约" in joined or "格式" in joined:
+        return build_refuse_system_unavailable("查询语句未通过库内格式校验（已自动重试）")
+    return build_refuse_system_unavailable("查询语句未通过库内校验（已自动重试）")
 
 
 def _advice_risk_type(text: str) -> Optional[str]:
@@ -331,10 +375,30 @@ def _normalize_metric_plan(plan: Any) -> Optional[Dict[str, Any]]:
     standard_fields = plan.get("standard_fields")
     time_grain = plan.get("time_grain")
     calculation = plan.get("calculation")
-    if (
-        not isinstance(standard_fields, list)
-        or not standard_fields
-        or not all(isinstance(x, str) and x.strip() for x in standard_fields)
+    # B-31：standard_fields 显式为 null/[] 且标注了 unsupported_metrics = 库内无对应字段
+    # （合规信号，非解析失败）→ 返回空字段计划 + 库外指标名，由上层走库外口径话术，禁止自由生成 SQL
+    if standard_fields is None or standard_fields == []:
+        scope_metrics = unsupported_metrics_of(plan)
+        if not scope_metrics:
+            return None
+        time_grain = plan.get("time_grain")
+        if not isinstance(time_grain, dict):
+            time_grain = {"mode": "none"}
+        calculation = plan.get("calculation")
+        if not isinstance(calculation, dict):
+            calculation = {"kind": "raw"}
+        filter_terms = plan.get("filter_terms")
+        if not isinstance(filter_terms, dict):
+            filter_terms = {}
+        return {
+            "standard_fields": [],
+            "time_grain": time_grain,
+            "calculation": calculation,
+            "filter_terms": filter_terms,
+            "unsupported_metrics": scope_metrics,
+        }
+    if not isinstance(standard_fields, list) or not all(
+        isinstance(x, str) and x.strip() for x in standard_fields
     ):
         return None
     if not isinstance(time_grain, dict) or not isinstance(time_grain.get("mode"), str) or not time_grain.get("mode"):
@@ -416,6 +480,10 @@ def _generate_sql(
     """
     if metric_plan is None:
         metric_plan = _standardize_metrics(rag, question)
+    scope_metrics = unsupported_metrics_of(metric_plan)
+    if scope_metrics:
+        # B-31：库内无对应字段 → 不再自由生成 SQL（避免生成非法 SQL 后回落技术性报错）
+        return "", ["库外指标（库内无对应字段）: " + "、".join(scope_metrics)]
     plan_text = _metric_plan_to_text(metric_plan)
     fs_enabled = bool(getattr(getattr(rag, "config", None), "AGENT_DYNAMIC_FEWSHOT", False))
     if fs_enabled:
@@ -758,12 +826,26 @@ def native_financial_query(rag: Any, user_query: str, user_id: str = "default") 
             query_text, typo_fixes = normalize_question_typos(user_query, canonical_names)
             if typo_fixes:
                 logger.info("B-28 错字归一化: %r -> %r（%s）", user_query, query_text, typo_fixes)
-            sql, errors = _generate_sql(rag, query_text, schema, run_conn, retries)
+            # B-31：先看指标标准化是否标注「库外指标」——库内无对应字段时直接走库外口径话术，
+            # 不再自由生成 SQL（原路径会生成非法 SQL 后回落技术性报错，用户看到的是格式契约细节）
+            metric_plan = _standardize_metrics(rag, query_text)
+            scope_metrics = unsupported_metrics_of(metric_plan)
+            if scope_metrics:
+                content, _tid = build_refuse_metric_out_of_scope(scope_metrics)
+                _log_fallback(_tid, detail="metric_out_of_scope: " + "、".join(scope_metrics))
+                logger.info("原生财务查询：库外指标拒答（%s）: %s", "、".join(scope_metrics), str(query_text)[:80])
+                return json.dumps(
+                    {"content": content, "image": [], "sql": "", "chart_json": None}, ensure_ascii=False
+                )
+            sql, errors = _generate_sql(rag, query_text, schema, run_conn, retries, metric_plan=metric_plan)
             if not sql:
-                detail = "；".join(errors[:3]) if errors else "未知原因"
-                content, _tid = build_refuse_system_unavailable(f"SQL 生成经 {retries} 次校验未通过：{detail}")
+                detail = "；".join(errors[:4]) if errors else "未知原因"
+                content, _tid = _sql_failure_reply(errors)
+                logger.warning("原生财务查询：SQL 生成经 %d 次校验未通过：%s", retries, detail)
                 _log_fallback(_tid, detail="sql_gen_failed")
-                return json.dumps({"content": content, "image": []}, ensure_ascii=False)
+                return json.dumps(
+                    {"content": content, "image": [], "sql": "", "chart_json": None}, ensure_ascii=False
+                )
             rows = _merge_company_rows(_execute_sql(run_conn, sql))
             if not rows:
                 content, _tid = build_refuse_data_not_found(

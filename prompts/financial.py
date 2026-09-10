@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple, Union
 
-FINANCIAL_PROMPT_VERSION = "2026-09-06-v8"
+FINANCIAL_PROMPT_VERSION = "2026-09-10-v9"  # B-31: 指标标准化新增 unsupported_metrics（库外指标显式标注）
 
 _FINANCIAL_FIELD_DOC = """
 ### 库内四张表字段白名单（标准字段名的唯一来源；standard_fields / SELECT 只能使用以下字段）
@@ -76,13 +76,20 @@ _METRIC_STRATEGY = """你是一个金融指标标准化器（Text-to-SQL 第 1 �
 
 _METRIC_TASK = """
 
-### JSON 结构（四个键齐全，键名固定）
+### JSON 结构（五个键齐全，键名固定）
 {
   "standard_fields": ["asset_liability_ratio", "stock_abbr", "report_year", "report_period"],
   "time_grain": {"mode": "single", "report_year": 2025, "report_period": "Q3"},
   "calculation": {"kind": "industry_mean"},
-  "filter_terms": {"company": null, "companies": null, "scope": "all", "threshold": null}
+  "filter_terms": {"company": null, "companies": null, "scope": "all", "threshold": null},
+  "unsupported_metrics": null
 }
+
+### 库外指标（B-31，必须显式标注）
+问题索要的指标在下方【字段白名单】里**没有任何对应字段**时（例如股价、总市值、成交量、换手率、
+股息率、每股公积金、电商 GMV、门店数量等）：standard_fields 给 null，并把用户口中的指标名原词
+放进 unsupported_metrics（数组，最多 5 个），例如 {"standard_fields": null, "unsupported_metrics": ["股价", "总市值"]}。
+**严禁**用近似字段替代（如用 net_asset_per_share 顶替"每股公积金"、用交易行情顶替"股价"），也严禁编造字段名。
 
 """
 
@@ -117,7 +124,7 @@ _METRIC_DETAIL_PRE = """### 1) standard_fields —— 选字段（必须用下�
 """
 
 _METRIC_DETAIL_POST = """
-只允许输出上述 JSON 结构；standard_fields 里的字段必须真实存在于白名单，无法判断的可空字段给 null，禁止编造。"""
+只允许输出上述 JSON 结构；standard_fields 里的字段必须真实存在于白名单，无法判断的可空字段给 null，禁止编造；库内确实没有对应字段时按上节规则填 unsupported_metrics，不要为凑字段而做近似替换。"""
 
 # ============================================================
 # 任务 2/4：SQL 生成（SQL_GEN）

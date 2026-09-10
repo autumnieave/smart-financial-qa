@@ -7,9 +7,9 @@
       "template_id": "prompt.package",
       "module": "__init__.py",
       "file": "prompts/__init__.py",
-      "version": "2026-09-10-v4",
+      "version": "2026-09-10-v5",
       "updated_at": "2026-09-10",
-      "changelog": "B-29（2026-09-10）：multi_agent 聚合器规则 6（研报预测/评级转述口径）+ fallback human.research_view_disclaimer 免责模板，包级版本同步",
+      "changelog": "B-31（2026-09-10）：financial 指标标准化新增 unsupported_metrics（库外指标显式标注）+ fallback refuse.metric_out_of_scope；B-29：multi_agent 聚合器规则 6（研报预测/评级转述口径）+ fallback human.research_view_disclaimer 免责模板，包级版本同步",
       "eval_ref": ""
     },
     {
@@ -52,18 +52,18 @@
       "template_id": "prompt.financial",
       "module": "financial",
       "file": "prompts/financial.py",
-      "version": "2026-09-06-v8",
+      "version": "2026-09-10-v9",
       "updated_at": "2026-09-06",
-      "changelog": "B-12 两步分解后版本：指标标准化 + SQL 生成四段；B-14 三层结构治理（片段常量 + build_financial_prompt 组合器，组装零文本变更，版本未 bump）",
+      "changelog": "B-31（2026-09-10）：指标标准化契约新增 unsupported_metrics（库外指标显式标注，禁止近似字段替换）；B-12 两步分解 + B-14 三层结构治理（片段常量 + 组合器）",
       "eval_ref": "docs/评估报告/端到端复验快照_2026-09.md"
     },
     {
       "template_id": "prompt.fallback",
       "module": "fallback",
       "file": "prompts/fallback.py",
-      "version": "2026-09-10-v2",
+      "version": "2026-09-10-v3",
       "updated_at": "2026-09-10",
-      "changelog": "B-29（2026-09-10）：新增 human.research_view_disclaimer 研报观点转述免责模板；B-27：新增 refuse.injection 注入/越权指令拒答模板",
+      "changelog": "B-31（2026-09-10）：新增 refuse.metric_out_of_scope 库外指标拒答；B-29：human.research_view_disclaimer 研报观点转述免责模板；B-27：新增 refuse.injection 注入/越权指令拒答模板",
       "eval_ref": "docs/评估报告/对抗挑战集v2_阶段B真实执行.md"
     }
   ]

@@ -127,13 +127,14 @@ def test_metric_standardize_max_tokens_tightened():
 
 
 def test_financial_prompts_new_constants_self_check():
-    assert financial_prompts.FINANCIAL_PROMPT_VERSION == "2026-09-06-v8"
+    assert financial_prompts.FINANCIAL_PROMPT_VERSION == "2026-09-10-v9"
     metric = financial_prompts.METRIC_STANDARDIZATION_SYSTEM_PROMPT
     sql_gen = financial_prompts.SQL_GEN_SYSTEM_PROMPT
     assert "standard_fields" in metric
     assert "time_grain" in metric
     assert "calculation" in metric
     assert "filter_terms" in metric
+    assert "unsupported_metrics" in metric  # B-31 库外指标显式标注
     # SQL 侧收敛为“映射+拼装”并引用标准化 JSON
     assert "指标标准化结果" in sql_gen
     assert "字段白名单" in sql_gen
@@ -142,3 +143,59 @@ def test_financial_prompts_new_constants_self_check():
 def test_config_default_metric_standardize_on():
     config = RAGConfig()
     assert getattr(config, "AGENT_METRIC_STANDARDIZE", True) is True
+
+
+# ── B-31 库外指标（unsupported_metrics）──────────────────────────────────
+
+
+def test_normalize_metric_plan_keeps_out_of_scope_signal():
+    """standard_fields 为 null/[] 且标注 unsupported_metrics → 返回库外指标计划（非解析失败）。"""
+    from tools.native_financial import unsupported_metrics_of
+
+    for empty in (None, []):
+        plan = _normalize_metric_plan(
+            {
+                "standard_fields": empty,
+                "time_grain": {"mode": "none"},
+                "calculation": {"kind": "raw"},
+                "filter_terms": {"company": "云南白药", "scope": "named"},
+                "unsupported_metrics": ["股价", "总市值"],
+            }
+        )
+        assert plan is not None
+        assert plan["standard_fields"] == []
+        assert unsupported_metrics_of(plan) == ["股价", "总市值"]
+
+
+def test_normalize_metric_plan_empty_without_signal_still_falls_back():
+    """无字段且未标注库外指标 → 仍按解析失败处理（保持旧自选兜底行为，避免误拒答）。"""
+    assert _normalize_metric_plan({"standard_fields": [], "unsupported_metrics": []}) is None
+    assert _normalize_metric_plan({"standard_fields": None}) is None
+
+
+def test_unsupported_metrics_of_tolerates_bad_input():
+    from tools.native_financial import unsupported_metrics_of
+
+    assert unsupported_metrics_of(None) == []
+    assert unsupported_metrics_of({"standard_fields": ["roe"]}) == []
+    assert unsupported_metrics_of({"unsupported_metrics": "股价"}) == []
+    assert unsupported_metrics_of({"unsupported_metrics": ["  股价  ", "", 3]}) == ["股价"]
+
+
+def test_generate_sql_short_circuits_on_out_of_scope_plan():
+    """库外指标计划 → 直接返回空 SQL + 标记错误，不发起任何 LLM 调用。"""
+    from tools.native_financial import _generate_sql
+
+    class _ExplodingRag:
+        class config:  # noqa: N801
+            AGENT_DYNAMIC_FEWSHOT = False
+
+        @property
+        def llm_generator(self):
+            raise AssertionError("库外指标不应触发 LLM 调用")
+
+    plan = {"standard_fields": [], "unsupported_metrics": ["股价"], "time_grain": {"mode": "none"},
+            "calculation": {"kind": "raw"}, "filter_terms": {}}
+    sql, errors = _generate_sql(_ExplodingRag(), "云南白药股价", {}, None, 2, metric_plan=plan)
+    assert sql == ""
+    assert any("库外指标" in e for e in errors)
