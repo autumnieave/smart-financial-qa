@@ -7,9 +7,9 @@
       "template_id": "prompt.package",
       "module": "__init__.py",
       "file": "prompts/__init__.py",
-      "version": "2026-09-10-v5",
+      "version": "2026-09-10-v6",
       "updated_at": "2026-09-10",
-      "changelog": "B-31：financial 指标标准化新增 unsupported_metrics（库外指标显式标注）+ fallback refuse.metric_out_of_scope；B-29：multi_agent 聚合器规则 6（研报预测/评级转述口径）+ fallback human.research_view_disclaimer 免责模板，包级版本同步",
+      "changelog": "B-33：financial 新增金额列单位口径速查（库内默认万元，唯一例外 cash_flow_sheet.net_cash_flow 为元）+ 禁止金额列间 10000 倍换算，包级版本同步；B-31：指标标准化 unsupported_metrics + fallback refuse.metric_out_of_scope",
       "eval_ref": ""
     },
     {
@@ -52,10 +52,10 @@
       "template_id": "prompt.financial",
       "module": "financial",
       "file": "prompts/financial.py",
-      "version": "2026-09-10-v9",
-      "updated_at": "2026-09-06",
-      "changelog": "B-31（2026-09-10）：指标标准化契约新增 unsupported_metrics（库外指标显式标注，禁止近似字段替换）；B-12 两步分解 + B-14 三层结构治理（片段常量 + 组合器）",
-      "eval_ref": "docs/评估报告/端到端复验快照_2026-09.md"
+      "version": "2026-09-10-v10",
+      "updated_at": "2026-09-10",
+      "changelog": "B-33（2026-09-10）：补齐金额列单位口径（万元/元速查表 _UNIT_RULES 注入 metric_standardization / sql_gen 两层）；修正 income.net_profit 被错标为「元」（实为万元）与 chart_gen 查询结果单位说明；硬性禁令新增「金额列间禁止 ×/÷10000」。事故：B2053 比值区间筛选因多乘 10000 命中 0 家（实际 14 家）",
+      "eval_ref": "docs/评估报告/80题全量SQL回归_2026-09-10.md"
     },
     {
       "template_id": "prompt.fallback",

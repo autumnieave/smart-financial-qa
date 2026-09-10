@@ -22,7 +22,7 @@ from prompts.pipeline import (
 from prompts.agent import AGENT_SYSTEM_PROMPT
 
 # 模板版本：每次修改 prompts 下任意模板文本时递增/更新
-PROMPT_VERSION = "2026-09-10-v5"  # B-31: 指标标准化 unsupported_metrics + fallback 库外指标拒答
+PROMPT_VERSION = "2026-09-10-v6"  # B-33: financial 补齐金额列单位口径（万元/元）+ 禁止 10000 倍换算
 
 __all__ = [
     "PROMPT_VERSION",

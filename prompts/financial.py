@@ -21,7 +21,19 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple, Union
 
-FINANCIAL_PROMPT_VERSION = "2026-09-10-v9"  # B-31: 指标标准化新增 unsupported_metrics（库外指标显式标注）
+FINANCIAL_PROMPT_VERSION = "2026-09-10-v10"  # B-33: 补齐金额列单位口径（万元/元速查表）+ 禁止 10000 倍换算；B-31: 指标标准化新增 unsupported_metrics（库外指标显式标注）
+
+_UNIT_RULES = """### 单位口径速查（2026-09-10 按库内实测量级核定，B-33；**做比值/换算前必读**）
+- **万元（默认）**：`core_performance_indicators_sheet` 全部金额列（total_operating_revenue、net_profit_10k_yuan、net_profit_excl_non_recurring 等）；
+  `balance_sheet` 全部金额列（asset_*、liability_*、equity_*）；`income_sheet` 全部金额列（net_profit、total_profit、operating_profit、operating_expense_* 等）；
+  `cash_flow_sheet` 的 operating_cf_net_amount、investing_cf_net_amount、financing_cf_net_amount、operating_cf_cash_from_sales、
+  investing_cf_cash_for_investments、investing_cf_cash_from_investment_recovery、financing_cf_cash_from_borrowing、financing_cf_cash_for_debt_repayment。
+- **元（唯一例外）**：`cash_flow_sheet.net_cash_flow`。该列与同表其他金额列**不同单位**，涉及它时必须显式换算（÷10000 转万元）。
+- **比率/百分比字段**：asset_liability_ratio、gross_profit_margin、net_profit_margin、roe、eps、*_yoy_growth、*_qoq_growth、*_ratio_of_net_cf 等，是百分数或单值，**不参与金额单位换算**。
+- **严禁**：在金额列之间做 ×10000 / ÷10000 的“单位对齐”换算。单位已统一（除 net_cash_flow），**同单位直接相除**即得正确比值
+  —— 例：经营现金流/净利润 = `operating_cf_net_amount / net_profit_10k_yuan`（两列均为万元，**不得**写成 `operating_cf_net_amount / (net_profit_10k_yuan * 10000)`，那会把比值缩小 10^4 倍）。
+- **历史事故（B-33，2026-09-10）**：B2053「2025Q3 经营现金流净额/净利润比值落在 0.8–1.2 的公司」因多乘了一次 10000，区间筛选命中 **0 家**（同口径实际 **14 家**）。
+"""
 
 _FINANCIAL_FIELD_DOC = """
 ### 库内四张表字段白名单（标准字段名的唯一来源；standard_fields / SELECT 只能使用以下字段）
@@ -94,11 +106,12 @@ _METRIC_TASK = """
 """
 
 _METRIC_DETAIL_PRE = """### 1) standard_fields —— 选字段（必须用下方白名单的标准字段名，禁止自造变体/组合字段）
-- 概念→字段示例：资产负债率=asset_liability_ratio；销售毛利率=gross_profit_margin；销售净利率=net_profit_margin；净资产收益率=roe；利润总额=total_profit；净利润=net_profit（income_sheet，元）或 net_profit_10k_yuan（core 表，万元）；营业收入/主营业务收入/销售额=total_operating_revenue（core 表，万元）；研发费用=operating_expense_rnd_expenses；未分配利润=equity_unappropriated_profit；总资产=asset_total_assets；总负债=liability_total_liabilities。
+- 概念→字段示例：资产负债率=asset_liability_ratio；销售毛利率=gross_profit_margin；销售净利率=net_profit_margin；净资产收益率=roe；利润总额=total_profit（万元）；净利润=net_profit（income_sheet，万元）或 net_profit_10k_yuan（core 表，万元，两者数值相同）；营业收入/主营业务收入/销售额=total_operating_revenue（core 表，万元）；研发费用=operating_expense_rnd_expenses；未分配利润=equity_unappropriated_profit；总资产=asset_total_assets；总负债=liability_total_liabilities。
 - 计算型指标库里没有现成字段时（如“研发费用占比”），放入**分子分母原料字段**（研发费用占比 → operating_expense_rnd_expenses + total_operating_revenue），不要编造“占比/率”字段名。
 - 需要区分公司或跨期/多期时，补标签字段 stock_abbr / stock_code / report_year / report_period；单公司单期取数题不要画蛇添足。
 - 同比/环比优先使用白名单现成 *_yoy_growth / *_qoq_growth 字段；费用类科目没有 yoy 字段时禁止编造，改查跨年原始值（配合多期 time_grain）。
-- 同名字段注意：net_profit（income_sheet）与 net_profit_10k_yuan（core）不是同一字段；total_operating_revenue 两表都有，做收入金额/门槛/排序时优先 core 表（万元）。
+- 同名字段注意：net_profit（income_sheet，万元）与 net_profit_10k_yuan（core，万元）不是同一字段但**同单位**；total_operating_revenue 两表都有，做收入金额/门槛/排序时优先 core 表（万元）。
+- **单位**：库内金额列默认万元，唯一例外是 `cash_flow_sheet.net_cash_flow`（元）；计算比值/占比时同单位直接相除，严禁乘除 10000（详见下方单位口径速查）。
 
 ### 2) time_grain —— 时间颗粒（与库内数据口径一致）
 - mode="single"：明确单期 → report_year + report_period 原样给（“2025年第三季度”→2025/Q3）。
@@ -145,10 +158,11 @@ _SQL_TASK = """
 """
 
 _SQL_DETAIL_PRE = """### A. 字段→表映射（每个 SELECT 字段先反查归属，禁止臆造/挂错表）
-- core_performance_indicators_sheet：roe、net_profit_10k_yuan、net_profit_excl_non_recurring、gross_profit_margin、net_profit_margin、eps、net_asset_per_share、operating_cf_per_share、total_operating_revenue（排序/门槛/金额同名字段优先此表，单位万元）。
-- income_sheet：net_profit、total_profit、operating_profit、total_operating_expenses、operating_expense_*（全部费用字段）、other_income、asset_impairment_loss、credit_impairment_loss。net_profit 与 core.net_profit_10k_yuan 不是同一字段，严禁互换；net_profit 必须从 income_sheet 取。
+- core_performance_indicators_sheet：roe、net_profit_10k_yuan、net_profit_excl_non_recurring、gross_profit_margin、net_profit_margin、eps、net_asset_per_share、operating_cf_per_share、total_operating_revenue（排序/门槛/金额同名字段优先此表，单位**万元**）。
+- income_sheet：net_profit、total_profit、operating_profit、total_operating_expenses、operating_expense_*（全部费用字段）、other_income、asset_impairment_loss、credit_impairment_loss（全部金额列单位**万元**）。net_profit 与 core.net_profit_10k_yuan 不是同一字段，严禁互换；net_profit 必须从 income_sheet 取。
 - balance_sheet：asset_*、liability_*、equity_*（含 asset_liability_ratio、asset_total_assets、liability_total_liabilities、equity_unappropriated_profit）。
-- cash_flow_sheet：net_cash_flow*、operating_cf_*、investing_cf_*、financing_cf_*。
+- cash_flow_sheet：net_cash_flow*、operating_cf_*、investing_cf_*、financing_cf_*。**单位**：除 `net_cash_flow` 为**元**外，其余金额列（operating_cf_net_amount / investing_cf_net_amount / financing_cf_net_amount / operating_cf_cash_from_sales / investing_cf_cash_for_investments / investing_cf_cash_from_investment_recovery / financing_cf_cash_from_borrowing / financing_cf_cash_for_debt_repayment）均为**万元**。
+- balance_sheet：全部金额列（asset_* / liability_* / equity_*）均为**万元**。
 - 完整字段表见文末【字段白名单】。
 
 ### B. FROM / JOIN 拼装（单表优先）
@@ -174,6 +188,8 @@ _SQL_DETAIL_PRE = """### A. 字段→表映射（每个 SELECT 字段先反查�
 ### E. 硬性禁令
 - 严禁在 SELECT 写任何数学公式/除法列（除法表达式只允许出现在 rank 的 ORDER BY）；占比换算由 analysis 侧完成。
 - 严禁编造 yoy/qoq 字段：白名单内 yoy/qoq 仅 operating_revenue_yoy_growth、net_profit_yoy_growth、net_profit_excl_non_recurring_yoy、operating_revenue_qoq_growth、net_profit_qoq_growth、asset_total_assets_yoy_growth、liability_total_liabilities_yoy_growth、net_cash_flow_yoy_growth；费用类科目无 yoy 时改查跨年原始值。
+- **严禁金额单位换算**：库内金额列除 `cash_flow_sheet.net_cash_flow`（元）外全部是万元，同单位直接相除；**禁止**在金额列间乘除 10000
+  （反例：`operating_cf_net_amount / (net_profit_10k_yuan * 10000)` → 比值缩小 10^4 倍、区间筛选恒 0 行，即 B-33 事故）。
 - 只输出 SQL 纯文本（多语句分号分隔）；禁止 ```sql 围栏、注释、解释性文字。
 
 【字段白名单】
@@ -283,7 +299,7 @@ _CHART_TASK = """
 
 ### 输入信息
 - **用户问题**：{question}
-- **查询结果**：{query_result}（JSON 数组；字段值为数据库原始值：net_profit 等元级字段单位为元，net_profit_10k_yuan / total_operating_revenue 等以 10k_yuan / 万 结尾的字段单位为万元，eps/roe/毛利率等比率字段为百分比数值）
+- **查询结果**：{query_result}（JSON 数组；字段值为数据库原始值：**金额列默认万元**（含 net_profit / total_profit / asset_total_assets / operating_cf_net_amount 等），唯一例外是 cash_flow_sheet.net_cash_flow 为**元**；eps/roe/毛利率等比率字段为百分比数值）
 
 ### 是否需要图表（先判断，再输出）
 - **需要**：趋势/走势（多期多年变化）、多公司同指标对比、排名、结构占比（营收/费用构成）、同比环比变化等。
@@ -321,9 +337,9 @@ def build_financial_prompt(kind: str) -> str:
         完整 prompt 字符串（片段按原顺序拼接，与公开常量一致）。
     """
     if kind == "metric_standardization":
-        return _METRIC_STRATEGY + _METRIC_TASK + _METRIC_DETAIL_PRE + _FINANCIAL_FIELD_DOC + _METRIC_DETAIL_POST
+        return _METRIC_STRATEGY + _METRIC_TASK + _METRIC_DETAIL_PRE + _UNIT_RULES + _FINANCIAL_FIELD_DOC + _METRIC_DETAIL_POST
     if kind == "sql_gen":
-        return _SQL_STRATEGY + _SQL_TASK + _SQL_DETAIL_PRE + _FINANCIAL_FIELD_DOC + _SQL_DETAIL_POST
+        return _SQL_STRATEGY + _SQL_TASK + _SQL_DETAIL_PRE + _UNIT_RULES + _FINANCIAL_FIELD_DOC + _SQL_DETAIL_POST
     if kind == "analysis":
         return _ANALYSIS_STRATEGY + _ANALYSIS_TASK + _ANALYSIS_DETAIL
     if kind == "chart_gen":
@@ -334,9 +350,9 @@ def build_financial_prompt(kind: str) -> str:
 def financial_layers(kind: str) -> Dict[str, str]:
     """返回某任务的「战略层/任务层/细化层」片段字典（便于逐层替换定位退化与单测）。"""
     if kind == "metric_standardization":
-        return {"strategy": _METRIC_STRATEGY, "task": _METRIC_TASK, "detail": _METRIC_DETAIL_PRE + _FINANCIAL_FIELD_DOC + _METRIC_DETAIL_POST}
+        return {"strategy": _METRIC_STRATEGY, "task": _METRIC_TASK, "detail": _METRIC_DETAIL_PRE + _UNIT_RULES + _FINANCIAL_FIELD_DOC + _METRIC_DETAIL_POST}
     if kind == "sql_gen":
-        return {"strategy": _SQL_STRATEGY, "task": _SQL_TASK, "detail": _SQL_DETAIL_PRE + _FINANCIAL_FIELD_DOC + _SQL_DETAIL_POST}
+        return {"strategy": _SQL_STRATEGY, "task": _SQL_TASK, "detail": _SQL_DETAIL_PRE + _UNIT_RULES + _FINANCIAL_FIELD_DOC + _SQL_DETAIL_POST}
     if kind == "analysis":
         return {"strategy": _ANALYSIS_STRATEGY, "task": _ANALYSIS_TASK, "detail": _ANALYSIS_DETAIL}
     if kind == "chart_gen":

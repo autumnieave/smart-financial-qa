@@ -1009,6 +1009,15 @@ def native_financial_query(rag: Any, user_query: str, user_id: str = "default") 
                     subject=query_text, detail="（SQL 已执行成功，但未返回任何数据）"
                 )
                 _log_fallback(_tid, detail="sql_ok_rows_empty")
+                # B-36：空结果分支在 return 前也要累积 SQL —— 否则「执行成功但 0 行」的
+                # 故障现场不会进入 conversation_state.sql，评测侧（judge / 先验校验）
+                # 拿到的记录里 SQL 为空，既无法复核也无法归因（B2053 4/5 误拒答即此盲区）
+                try:
+                    from agents.planner import _append_sql
+
+                    _append_sql(rag, sql)
+                except Exception:  # noqa: BLE001
+                    pass
                 return json.dumps(
                     {"content": content, "image": [], "sql": sql, "chart_json": None},
                     ensure_ascii=False,
