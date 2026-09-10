@@ -1,0 +1,100 @@
+# 分层 CI（B-21A）：第 1 层必过（离线、零成本）→ 第 2 层 golden 子集（mock 版，默认关闭）→ 第 3 层 nightly compose 冒烟（占位）
+#
+# 与既有 ci.yml 的关系：ci.yml 保持"必过"不动，本文件是分层版骨架。
+# 两份并存期间第 1 层会重复跑一次（纯 CPU、无 LLM 调用，成本可忽略）；
+# 待 B-21B 决策后，可由本文件接管第 1 层并下线 ci.yml。
+#
+# 开关（默认全关，避免误用 secret / 预算）：
+#   第 2 层：仓库变量 ENABLE_LAYER2 = true 时启用（Settings → Variables，非 Secret）
+#   第 3 层：仅 schedule / workflow_dispatch 触发，且为占位实现
+name: CI (layered)
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+  schedule:
+    # UTC 18:30 = 北京时间 02:30（nightly）
+    - cron: '30 18 * * *'
+
+jobs:
+  # ==================== 第 1 层：必过（pytest + 覆盖率 + ruff） ====================
+  layer1-unit:
+    name: L1 unit tests + coverage + lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Lint (ruff 最小规则集，不阻断存量)
+        run: ruff check . --output-format=github
+
+      - name: Run unit tests + coverage gate
+        run: |
+          pytest tests/ -v --tb=short \
+            --cov=core --cov=tools.sql_guard --cov=tools.sql_validator \
+            --cov=pipelines.citation_validator --cov=utils.query_cache \
+            --cov-report=term-missing --cov-fail-under=80
+
+  # ==================== 第 2 层：组件回归 + golden 子集（mock 版，离线） ====================
+  layer2-golden-subset:
+    name: L2 golden subset (mock, offline)
+    needs: layer1-unit
+    # 默认关闭：B-21B 决定是否放行 secret / 预算 / 启用哪几层后再打开
+    if: vars.ENABLE_LAYER2 == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Component regression (SQL guard / validator / metric consistency)
+        run: pytest tests/test_sql_guard.py tests/test_sql_validator.py tests/test_metric_consistency.py -q
+
+      - name: Golden subset regression (mock, 参考 SQL 解析口径)
+        run: python scripts/ci_golden_subset.py --subset-size 20 --json-out 训练结果数据/ci_golden_subset.json
+
+      - name: Upload quality report
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-quality-report
+          path: 训练结果数据/ci_golden_subset.json
+
+  # ==================== 第 3 层：nightly / 发布前 compose 冒烟（占位） ====================
+  layer3-compose-smoke:
+    name: L3 compose smoke (nightly, placeholder)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Compose smoke (占位，需 Docker + 预算放行后启用)
+        run: |
+          echo "TODO(B-21B)：启用前需确认 —— 1) 是否放行 DashScope secret；2) 月度 LLM 预算上限；3) 是否允许 nightly 起栈"
+          echo "计划命令（默认只探活，不调用 LLM）："
+          echo "  docker compose up -d qdrant backend frontend"
+          echo "  curl -sf http://localhost:6333/healthz && curl -sf http://localhost:18000/health"
+          echo "  python scripts/ci_golden_subset.py --subset-size 20"
+          test -f scripts/ci_compose_smoke.ps1 && echo "smoke 脚本已在仓库：scripts/ci_compose_smoke.ps1"
+          echo "占位实现：不阻断（exit 0）"
