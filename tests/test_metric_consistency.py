@@ -1,23 +1,20 @@
 # -*- coding: utf-8 -*-
-"""B-30 指标-问题一致性校验纯逻辑单测：零外部依赖（不调 LLM/MySQL）。
+"""B-30 指标口径防线纯逻辑单测：零外部依赖（不调 LLM/MySQL）。
 
-覆盖：SQL 取用指标计划外字段（近似字段替代）被拦截、标签列/函数/表达式/星号不误伤、
-order_by 分子分母与 threshold 字段不误伤、多语句逐条判定，以及失败出口路由到
-refuse.metric_mismatch 模板（prompts/fallback.py）。
+两层：
+1) 库外指标出口（拦截层）——unsupported_metrics 标注 + 库外词表兜底 unmarked_out_of_scope_terms；
+2) 指标-问题一致性（**审计层**，不拦截）——metric_field_consistency_error 记录「计划与 SQL 的字段差异」，
+   供人工审计是否有指标替换；实测硬拦截会误伤合法补用字段（80 题回归 94 次判定 6 次命中，均为计划欠规范）。
 """
 
 from __future__ import annotations
 
-from prompts.fallback import (
-    REFUSE_METRIC_MISMATCH,
-    build_refuse_metric_mismatch,
-    template_category,
-)
+from prompts.fallback import REFUSE_METRIC_OUT_OF_SCOPE, build_refuse_metric_out_of_scope, template_category
 from tools.native_financial import (
     _METRIC_MISMATCH_MARKER,
     _allowed_metric_fields,
-    _sql_failure_reply,
     metric_field_consistency_error,
+    unmarked_out_of_scope_terms,
 )
 
 _PLAN = {
@@ -28,8 +25,8 @@ _PLAN = {
 }
 
 
-def test_substituted_field_is_rejected() -> None:
-    """C2016 场景：问未分配利润/公积金，SQL 却取 net_asset_per_share → 拦截。"""
+def test_substituted_field_is_flagged() -> None:
+    """C2016 场景：问未分配利润/公积金，SQL 却取 net_asset_per_share → 审计命中（记录，不拦截）。"""
     sql = (
         "SELECT stock_abbr, net_asset_per_share, report_year, report_period "
         "FROM core_performance_indicators_sheet WHERE stock_abbr LIKE '%云南白药%';"
@@ -89,33 +86,13 @@ def test_none_plan_or_empty_fields_skips_check() -> None:
 
 
 def test_multi_statement_checked_per_statement() -> None:
-    """多语句逐条判定：任一语句越界即拦截。"""
+    """多语句逐条判定：任一语句越界即命中。"""
     sql = (
         "SELECT stock_abbr, equity_unappropriated_profit FROM balance_sheet WHERE report_year = 2023;\n"
         "SELECT stock_abbr, net_asset_per_share FROM balance_sheet WHERE report_year = 2024;"
     )
     err = metric_field_consistency_error(sql, _PLAN)
     assert err and "net_asset_per_share" in err
-
-
-def test_sql_failure_reply_routes_to_metric_mismatch() -> None:
-    """一致性校验失败出口 → refuse.metric_mismatch（不给技术细节、不给近似口径数值）。"""
-    content, template_id = _sql_failure_reply([f"{_METRIC_MISMATCH_MARKER}（B-30）：SQL 取用了指标计划外的字段 net_asset_per_share"])
-    assert template_id == REFUSE_METRIC_MISMATCH
-    assert "口径" in content
-    assert "net_asset_per_share" not in content
-
-
-def test_metric_mismatch_template_registered_as_refuse() -> None:
-    """模板登记在 refuse 类，且话术给出可查指标示例。"""
-    content, template_id = build_refuse_metric_mismatch(["每股公积金"])
-    assert template_id == REFUSE_METRIC_MISMATCH
-    assert template_category(template_id) == "refuse"
-    assert "每股公积金" in content
-    assert "营业收入" in content
-
-
-# ── B-30 库外指标漏标兜底（词表） ────────────────────────────────────────
 
 
 def test_unmarked_out_of_scope_detects_missed_marking() -> None:
@@ -151,3 +128,10 @@ def test_unmarked_out_of_scope_ignores_normal_and_none_plan() -> None:
     assert unmarked_out_of_scope_terms("云南白药目前的股价是多少？", {"standard_fields": [], "calculation": {}}) == [
         "股价"
     ]
+
+def test_out_of_scope_export_template_still_serves_term_stub() -> None:
+    """词表兜底复用库外指标模板（拦截层唯一出口），不走已删除的 metric_mismatch。"""
+    content, tid = build_refuse_metric_out_of_scope(unmarked_out_of_scope_terms("片仔癀的每股公积金是多少？", {"standard_fields": ["net_asset_per_share"]}))
+    assert tid == REFUSE_METRIC_OUT_OF_SCOPE
+    assert template_category(tid) == "refuse"
+    assert "每股公积金" in content

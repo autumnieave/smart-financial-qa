@@ -38,7 +38,6 @@ from utils.output_contracts import (
 from prompts.fallback import (
     build_human_risk_advice,
     build_refuse_data_not_found,
-    build_refuse_metric_mismatch,
     build_refuse_metric_out_of_scope,
     build_refuse_system_unavailable,
     log_fallback as _log_fallback,
@@ -126,9 +125,6 @@ def _sql_failure_reply(errors: List[str]) -> Tuple[str, str]:
     joined = "；".join(errors or [])
     if any(m in joined for m in _FIELD_ERROR_MARKERS):
         return build_refuse_metric_out_of_scope(None)
-    if _METRIC_MISMATCH_MARKER in joined:
-        # B-30：一致性问题（近似字段替代）——宁可拒答也不用错口径作答
-        return build_refuse_metric_mismatch()
     if "全角标点" in joined or "契约" in joined or "格式" in joined:
         return build_refuse_system_unavailable("查询语句未通过库内格式校验（已自动重试）")
     return build_refuse_system_unavailable("查询语句未通过库内校验（已自动重试）")
@@ -137,7 +133,7 @@ def _sql_failure_reply(errors: List[str]) -> Tuple[str, str]:
 #: 标签/维度列（非指标列）：不参与「指标-问题一致性」校验（B-30）
 _TAG_COLUMNS = frozenset({"stock_code", "stock_abbr", "report_year", "report_period"})
 
-#: 「指标-问题一致性」校验的错误标记（_sql_failure_reply 据此走 refuse.metric_mismatch）
+#: 「指标-问题一致性」审计信号的标记（写入日志/事件通道，不参与拦截）
 _METRIC_MISMATCH_MARKER = "指标-问题一致性校验未通过"
 
 
@@ -201,15 +197,20 @@ def metric_field_consistency_error(sql: str, metric_plan: Optional[Dict[str, Any
     """指标-问题一致性校验（B-30）：SQL 取用的指标列必须来自指标计划，禁止近似字段替代。
 
     背景：C2016 问「每股公积金」，SQL 实际取 net_asset_per_share（每股净资产）作答。
-    B-31 已在指标标准化契约上标注库外指标；本函数是生成侧的确定性兜底（零 LLM 成本），
-    只比较 SELECT 里的纯列名——函数 / 表达式 / ``*`` 一律跳过，避免误伤聚合与计算列。
+    B-31 已在指标标准化契约上标注库外指标；本函数是生成侧的确定性**审计信号**，零 LLM 成本，
+    只比较 SELECT 里的纯列名——函数 / 表达式 / ``*`` 一律跳过。
+
+    **定位：审计，不拦截**。80 题全量回归实测：94 次判定中 6 次命中，逐条核验均为「计划欠规范」
+    而非真实指标替换（SQL 合法补用 ``*_yoy_growth``、``other_income``、口径校验原料字段等），
+    硬门禁会把这些题从「有数」退化为「仅研报回答」——所以只记录、不重试、不拒答；
+    真实库外指标由 ② 出口（unsupported_metrics / 库外词表）负责拒答。
 
     Args:
         sql: 生成待校验的 SQL（可多条，分号分隔）
         metric_plan: _standardize_metrics 的输出；为 None 或未标注标准字段时不校验
 
     Returns:
-        不一致的错误说明（供错误重试 / 拒答出口使用）；一致或无法判定返回 None
+        不一致的说明（写入日志与事件通道 kind=metric_consistency 供审计）；一致或无法判定返回 None
     """
     if not isinstance(metric_plan, dict):
         return None
@@ -672,8 +673,8 @@ def _generate_sql(
                     "metric_consistency", not cons_err, [cons_err] if cons_err else []
                 )
                 if cons_err:
-                    errors.append(cons_err)
-                    continue
+                    # 审计信号：只记录（B-30 全量回归实测硬拦截会把合法补用字段的题误伤）
+                    logger.warning("原生财务查询：指标计划与 SQL 的字段差异（审计）: %s", cons_err)
             cerr = ""
             if ok and conn is not None:
                 cerr = compile_check(conn, sql)
