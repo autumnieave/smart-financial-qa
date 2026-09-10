@@ -7,7 +7,7 @@
 - 上市公司“智能问数”助手：用户用自然语言查财务数据（SQL 链路）与问研报观点（RAG 链路），答案带引用溯源，由 LangGraph supervisor-workers 多 Agent 编排（财务 / 研报子 Agent 并行）。
 - 技术栈：Python 3.11 + FastAPI（REST / SSE）+ React 前端 + LangGraph + Qdrant + MySQL + SQLite 记忆；模型与 Embedding 走 DashScope（qwen3.5-plus / qwen3-rerank / text-embedding-v2）。
 - 近 10 次提交主线：B-13 prompts 版本注册表 → B-14 三层结构 → B-15/16 few-shot 与动态检索 → B-17 输出契约 → B-18 兜底话术 → B-19/20 API 契约与覆盖率门禁 → B-22 对抗挑战集 v2（18 条/5 类，真实执行 + 人工抽审）→ B-26~B-29 挑战集暴露缺陷修复（supervisor 误拒答 / 注入先拒答 / 错别字归一化 / 研报预测荐股转述口径）。
-- 离线单测 **324 passed**（30 个 test_*.py + conftest，零外部依赖）；竞赛原始数据与 golden 基准本地保留、不入库。
+- 离线单测 **330 passed**（30 个 test_*.py + conftest，零外部依赖）；挑战集证据支持 `python -m eval challenge --rejudge` 零成本重判（不重跑 LLM），人工复核存 sidecar（训练结果数据/challenge_v2_review.json）；竞赛原始数据与 golden 基准本地保留、不入库。
 
 ## 2. 确定性锚点（已知稳定项）
 
@@ -26,7 +26,7 @@
 - 缓存污染风险：/chat 缓存 key 不含 Prompt / Query 版本（app/api.py:86、124），QUERY_CACHE_VERSION 默认空；财务链路缓存 key 已含 FINANCIAL_PROMPT_VERSION，无此风险。
 - Redis 记忆后端代码可用但无 docker-compose 编排（compose 仅 qdrant / backend / frontend），MEMORY_REDIS_URL 默认 localhost:6379/0 连通性需人工验证；评测与重建脚本集合默认值（research_reports_v3）与 config 默认（research_reports_v3_full）不一致，存在跑错集合风险。
 - 测试健康：324 passed、0 失败 0 跳过；源码 TODO / FIXME / HACK 为 0 处；prompts 模块级版本号已补齐（B-13 起，registry.json 为唯一事实源）。
-- 挑战集复跑新发现的缺陷（2026-09-10）：C2016「每股公积金」被近似字段 net_asset_per_share（每股净资产）替代作答 → B-30 指标替换防护；C2007 股价/总市值回落技术性 SQL 报错、C2017「未显示具体数值」未命中拒答词表 → B-31；C2018 研报召回不稳定（3 次运行仅 1 次召回预测/评级段落）→ 归入 B-24 检索质量评估证据。
+- 挑战集复跑新发现的缺陷（2026-09-10）：C2016「每股公积金」被近似字段 net_asset_per_share（每股净资产）替代作答 → B-30 指标替换防护；C2007 股价/总市值回落技术性 SQL 报错 → B-31（C2017「未显示具体数值」类拒答词表已于 2026-09-10 扩充并重判为 auto pass）；C2018 研报召回不稳定（3 次运行仅 1 次召回预测/评级段落）→ 归入 B-24 检索质量评估证据。
 
 ## 4. 下一次迭代的检查建议
 

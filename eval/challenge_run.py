@@ -41,6 +41,8 @@ os.environ["QUERY_CACHE_ENABLED"] = "false"
 
 DEFAULT_JSON_OUT = REPO_ROOT / "训练结果数据" / "challenge_v2_phaseB_results.json"
 DEFAULT_MD_OUT = REPO_ROOT / "docs" / "评估报告" / "对抗挑战集v2_阶段B真实执行.md"
+#: 人工复核结论 sidecar（编号 → {结论, 依据}）：与运行产物解耦，重跑/重判不丢人工结论
+DEFAULT_REVIEW_PATH = REPO_ROOT / "训练结果数据" / "challenge_v2_review.json"
 
 #: 单题链路重试次数（LLM/网络抖动兜底）
 RETRY_TIMES = 3
@@ -158,6 +160,7 @@ def _run_one(pipeline: Any, item: Dict[str, Any], verbose: bool = True) -> Dict[
         "问题": question,
         "期望行为": item.get("期望行为", ""),
         "通过标准": item.get("通过标准", ""),
+        "断言": item.get("断言", ""),
         "判定": verdict["pass"],
         "判定说明": verdict["reason"],
         "回答原文": content,
@@ -251,6 +254,85 @@ def execute_items(
     return 0
 
 
+def load_review(path: Optional[Path] = None) -> Dict[str, Dict[str, str]]:
+    """加载人工复核 sidecar（不存在返回空 dict）。"""
+    p = Path(path or DEFAULT_REVIEW_PATH)
+    if not p.is_file():
+        return {}
+    data = json.loads(p.read_text(encoding="utf-8"))
+    return {str(k): v for k, v in (data.get("reviews") or {}).items()}
+
+
+def apply_review(summary: Dict[str, Any], review: Dict[str, Dict[str, str]]) -> int:
+    """把 sidecar 人工复核结论回填进 records（幂等，重跑/重判后可重复执行）。
+
+    Args:
+        summary: 结果汇总字典（就地修改）
+        review: 编号 → {"结论": 通过/不通过/存疑, "依据": str}
+
+    Returns:
+        回填条数
+    """
+    filled = 0
+    for rec in summary.get("records") or []:
+        entry = review.get(str(rec["编号"]))
+        if not entry:
+            continue
+        text = f"{entry.get('结论', '')}｜{entry.get('依据', '')}".strip("｜")
+        rec["人工复核"] = text
+        filled += 1
+    return filled
+
+
+def rejudge_summary(
+    summary: Dict[str, Any],
+    items: Optional[List[Dict[str, Any]]] = None,
+    judge: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """用最新判定词表对「已存回答原文」重新判定（不调用 LLM，零成本、可离线单测）。
+
+    用途：判定词表/判据更新后（如 2026-09-10 扩充拒答措辞），刷新既有证据的
+    pass/fail/pending 与按类通过率，避免为词表变更重跑真实链路（并保住人工复核结论）。
+
+    Args:
+        summary: execute_items 产出的结果汇总（就地刷新 records/rows/by_category/auto_summary）
+        items: golden 条目（默认按 summary["version"] 从快照加载；用于取「断言」等口径字段）
+        judge: 判定函数（默认 eval.challenge.judge_case）
+
+    Returns:
+        刷新后的 summary
+    """
+    from eval import challenge as challenge_mod  # noqa: PLC0415
+
+    judge_fn = judge or challenge_mod.judge_case
+    records = summary.get("records") or []
+    if items is None:
+        items = _load_items(summary.get("version") or "v2")
+    by_id = {str(it["编号"]): it for it in items}
+    answers: Dict[str, str] = {}
+    for rec in records:
+        item = by_id.get(str(rec["编号"])) or {
+            "编号": rec["编号"], "类别": rec["类别"],
+            "期望行为": rec.get("期望行为", ""), "断言": rec.get("断言", ""),
+        }
+        verdict = judge_fn(item, rec.get("回答原文") or "")
+        rec["判定"] = verdict["pass"]
+        rec["判定说明"] = verdict["reason"]
+        answers[str(rec["编号"])] = rec.get("回答原文") or ""
+    subset = [by_id[k] for k in answers if k in by_id]
+    agg = challenge_mod.run_challenge(
+        subset,
+        answer_fn=lambda it: answers.get(str(it["编号"]), ""),
+        judge=judge_fn,
+    )
+    summary["rows"] = agg["rows"]
+    summary["by_category"] = agg["by_category"]
+    summary["category_counter"] = agg["category_counter"]
+    summary["auto_summary"] = agg["auto_summary"]
+    summary["rejudged_at"] = _now()
+    return summary
+
+
 def build_report_markdown(summary: Dict[str, Any]) -> str:
     """把阶段 B 结果汇总渲染为人工抽审 Markdown（纯函数，可单测）。
 
@@ -303,9 +385,11 @@ def build_report_markdown(summary: Dict[str, Any]) -> str:
     lines.append("")
     for rec in summary["records"]:
         verdict = "pass" if rec["判定"] is True else ("fail" if rec["判定"] is False else "pending")
-        mark = "[ ]"
+        review = (rec.get("人工复核") or "").strip()
+        mark = "[√]" if review else "[ ]"
+        tail = f"人工复核：{review}" if review else "人工复核：____"
         lines.append(f"- {mark} **{rec['编号']}**（{rec['类别标签']} · 期望 {rec['期望行为']} · "
-                     f"启发式判定={verdict}）：{rec['判定说明']}  → 人工复核：____")
+                     f"自动判定={verdict}）：{rec['判定说明']}  → {tail}")
     lines.append("")
     lines.append("## 三、逐条明细")
     lines.append("")
@@ -332,8 +416,64 @@ def build_report_markdown(summary: Dict[str, Any]) -> str:
         lines.append("")
         lines.append("---")
         lines.append("")
+    reviewed = [r for r in summary["records"] if (r.get("人工复核") or "").strip()]
+    if reviewed:
+        def _bucket(text: str) -> str:
+            """结论归类（sidecar 结论取值：通过 / 不通过 / 存疑 / 其他）。"""
+            t = (text or "").strip()
+            for key in ("不通过", "通过", "存疑"):
+                if t.startswith(key):
+                    return key
+            return "其他"
+
+        counts: Dict[str, int] = {}
+        for r in reviewed:
+            k = _bucket(r["人工复核"])
+            counts[k] = counts.get(k, 0) + 1
+        lines.append("## 四、人工复核汇总（sidecar 回填）")
+        lines.append("")
+        lines.append(f"- 已回填 {len(reviewed)}/{len(summary['records'])} 条；"
+                     + "，".join(f"{k} {v} 条" for k, v in sorted(counts.items())))
+        lines.append("- 回填来源：训练结果数据/challenge_v2_review.json（与运行产物解耦，重跑/重判不丢失）")
+        lines.append("")
+        lines.append("| 编号 | 类别 | 自动判定 | 人工复核 |")
+        lines.append("| --- | --- | --- | --- |")
+        for r in reviewed:
+            verdict = "pass" if r["判定"] is True else ("fail" if r["判定"] is False else "pending")
+            lines.append(f"| {r['编号']} | {r['类别标签']} | {verdict} | {r['人工复核']} |")
+        lines.append("")
     lines.append("（报告结束 —— 人工复核结论回填到上方勾选清单后，归档到 TASKS/reports 再固化）")
     return "\n".join(lines)
+
+
+def rejudge_file(
+    json_path: Optional[Path] = None,
+    md_path: Optional[Path] = None,
+    review_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """对既有结果 JSON 重判（不调用 LLM）并回填人工复核 sidecar，刷新 JSON + 抽审报告。
+
+    Args:
+        json_path: 结果 JSON（默认 DEFAULT_JSON_OUT）
+        md_path: 抽审报告（默认 DEFAULT_MD_OUT）
+        review_path: 人工复核 sidecar（默认 DEFAULT_REVIEW_PATH）
+
+    Returns:
+        刷新后的 summary
+    """
+    jp = Path(json_path or DEFAULT_JSON_OUT)
+    mp = Path(md_path or DEFAULT_MD_OUT)
+    summary = json.loads(jp.read_text(encoding="utf-8"))
+    rejudge_summary(summary)
+    filled = apply_review(summary, load_review(review_path))
+    jp.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    mp.parent.mkdir(parents=True, exist_ok=True)
+    mp.write_text(build_report_markdown(summary), encoding="utf-8")
+    print(f"重判完成（词表口径 {_now()}）：人工复核回填 {filled}/{len(summary.get('records') or [])} 条", flush=True)
+    print(json.dumps(summary["auto_summary"], ensure_ascii=False, indent=2), flush=True)
+    print(f"明细已写入: {jp}", flush=True)
+    print(f"抽审报告已写入: {mp}", flush=True)
+    return summary
 
 
 def _load_items(version: str) -> List[Dict[str, Any]]:
@@ -353,7 +493,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--categories", nargs="+", default=None)
     parser.add_argument("--json-out", type=Path, default=None)
     parser.add_argument("--md-out", type=Path, default=None)
+    parser.add_argument("--rejudge", action="store_true",
+                        help="用最新判定词表重判既有结果 JSON（不调用 LLM）+ 回填人工复核 sidecar")
     args = parser.parse_args(argv)
+
+    if args.rejudge:
+        rejudge_file(args.json_out, args.md_out)
+        return 0
 
     items = _load_items(args.version)
     if args.categories:

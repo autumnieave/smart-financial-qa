@@ -127,6 +127,10 @@ def cmd_challenge(args: argparse.Namespace) -> int:
     """challenge：对抗挑战集 v2（阶段 A：子集预览；阶段 B：--run 接通真实 Agent 引擎）"""
     from eval import challenge as challenge_mod
 
+    if getattr(args, "rejudge", False):
+        from eval import challenge_run
+        challenge_run.rejudge_file()
+        return 0
     golden = challenge_mod.load_challenge(args.version)
     items = golden["items"]
     if args.categories:
@@ -249,6 +253,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_chal.add_argument("--limit", type=int, default=0, help="只取前 N 条（预览/冒烟）")
     p_chal.add_argument("--run", action="store_true", help="阶段 B：接通真实 Agent 引擎逐条执行 + 判定 + 抽审报告")
     p_chal.add_argument("--dry-run", action="store_true", help="阶段 A：仅预览子集，不执行真实调用（默认）")
+    p_chal.add_argument("--rejudge", action="store_true",
+                        help="用最新判定词表重判既有结果 JSON（不调用 LLM）+ 回填人工复核 sidecar")
     p_chal.set_defaults(func=cmd_challenge)
 
     p_rep = sub.add_parser("report", help="聚合最新证据生成评估报告")
