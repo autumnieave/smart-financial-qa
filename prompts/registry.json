@@ -7,9 +7,9 @@
       "template_id": "prompt.package",
       "module": "__init__.py",
       "file": "prompts/__init__.py",
-      "version": "2026-09-10-v5",
+      "version": "2026-09-10-v6",
       "updated_at": "2026-09-10",
-      "changelog": "B-31（2026-09-10）：financial 指标标准化新增 unsupported_metrics（库外指标显式标注）+ fallback refuse.metric_out_of_scope；B-29：multi_agent 聚合器规则 6（研报预测/评级转述口径）+ fallback human.research_view_disclaimer 免责模板，包级版本同步",
+      "changelog": "B-30（2026-09-10）：fallback 新增 refuse.metric_mismatch（指标-问题一致性校验失败出口）；B-31：financial 指标标准化新增 unsupported_metrics（库外指标显式标注）+ fallback refuse.metric_out_of_scope；B-29：multi_agent 聚合器规则 6（研报预测/评级转述口径）+ fallback human.research_view_disclaimer 免责模板，包级版本同步",
       "eval_ref": ""
     },
     {
@@ -61,9 +61,9 @@
       "template_id": "prompt.fallback",
       "module": "fallback",
       "file": "prompts/fallback.py",
-      "version": "2026-09-10-v3",
+      "version": "2026-09-10-v4",
       "updated_at": "2026-09-10",
-      "changelog": "B-31（2026-09-10）：新增 refuse.metric_out_of_scope 库外指标拒答；B-29：human.research_view_disclaimer 研报观点转述免责模板；B-27：新增 refuse.injection 注入/越权指令拒答模板",
+      "changelog": "B-30（2026-09-10）：新增 refuse.metric_mismatch——SQL 取用指标计划外字段（近似字段替代）时宁可拒答；B-31（2026-09-10）：新增 refuse.metric_out_of_scope 库外指标拒答；B-29：human.research_view_disclaimer 研报观点转述免责模板；B-27：新增 refuse.injection 注入/越权指令拒答模板",
       "eval_ref": "docs/评估报告/对抗挑战集v2_阶段B真实执行.md"
     }
   ]

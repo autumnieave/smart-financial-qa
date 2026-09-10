@@ -38,6 +38,7 @@ from utils.output_contracts import (
 from prompts.fallback import (
     build_human_risk_advice,
     build_refuse_data_not_found,
+    build_refuse_metric_mismatch,
     build_refuse_metric_out_of_scope,
     build_refuse_system_unavailable,
     log_fallback as _log_fallback,
@@ -75,6 +76,41 @@ def unsupported_metrics_of(metric_plan: Optional[Dict[str, Any]]) -> List[str]:
     return [str(x).strip() for x in raw if isinstance(x, str) and str(x).strip()]
 
 
+#: 已知库外指标词表（B-30 兜底）：问题里出现且模型未标注 unsupported_metrics 时，
+#: 仍按库外口径拒答——防「模型把库外指标硬映射成近似字段」（如问每股公积金却选 net_asset_per_share）。
+#: 词表为策划式清单（对应 prompts/financial.py 中的库外指标示例），已比对 golden 80 题 + 挑战集无其他命中。
+_OUT_OF_SCOPE_QUESTION_TERMS: Tuple[str, ...] = (
+    "股价", "总市值", "市值", "成交量", "成交额", "换手率", "市盈率", "市净率", "市销率", "股息率",
+    "每股公积金", "公积金", "gmv", "门店数量", "门店数", "客单价", "复购率",
+)
+
+
+def unmarked_out_of_scope_terms(question: str, metric_plan: Optional[Dict[str, Any]]) -> List[str]:
+    """问题问到已知库外指标、但指标标准化未标注 unsupported_metrics 的词（B-30 兜底）。
+
+    已标注的库外指标由 unsupported_metrics 出口处理，这里只补「模型漏标/硬映射」的情况，
+    避免同一问题被两条出口重复处置。
+
+    Args:
+        question: 重构后的财务问题文本
+        metric_plan: _standardize_metrics 的输出（None 时不判，保持旧兜底行为）
+
+    Returns:
+        命中且未标注的库外指标词列表（最多 5 个）
+    """
+    if not isinstance(metric_plan, dict):
+        return []
+    marked_text = " ".join(m.lower() for m in unsupported_metrics_of(metric_plan))
+    text = str(question or "").lower()
+    hits: List[str] = []
+    # 长词优先，短词若已被更长的命中词包含则跳过（「每股公积金」不再额外报「公积金」）
+    for term in sorted(_OUT_OF_SCOPE_QUESTION_TERMS, key=len, reverse=True):
+        low = term.lower()
+        if low in text and low not in marked_text and not any(low in hit.lower() for hit in hits):
+            hits.append(term)
+    return hits[:5]
+
+
 def _sql_failure_reply(errors: List[str]) -> Tuple[str, str]:
     """SQL 生成失败 → 用户可见话术（技术明细只进日志/事件通道，B-31）。
 
@@ -90,9 +126,111 @@ def _sql_failure_reply(errors: List[str]) -> Tuple[str, str]:
     joined = "；".join(errors or [])
     if any(m in joined for m in _FIELD_ERROR_MARKERS):
         return build_refuse_metric_out_of_scope(None)
+    if _METRIC_MISMATCH_MARKER in joined:
+        # B-30：一致性问题（近似字段替代）——宁可拒答也不用错口径作答
+        return build_refuse_metric_mismatch()
     if "全角标点" in joined or "契约" in joined or "格式" in joined:
         return build_refuse_system_unavailable("查询语句未通过库内格式校验（已自动重试）")
     return build_refuse_system_unavailable("查询语句未通过库内校验（已自动重试）")
+
+
+#: 标签/维度列（非指标列）：不参与「指标-问题一致性」校验（B-30）
+_TAG_COLUMNS = frozenset({"stock_code", "stock_abbr", "report_year", "report_period"})
+
+#: 「指标-问题一致性」校验的错误标记（_sql_failure_reply 据此走 refuse.metric_mismatch）
+_METRIC_MISMATCH_MARKER = "指标-问题一致性校验未通过"
+
+
+def _allowed_metric_fields(metric_plan: Dict[str, Any]) -> set:
+    """指标计划允许出现在 SELECT 的指标列（B-30）。
+
+    Args:
+        metric_plan: 规整后的指标计划 JSON
+
+    Returns:
+        允许的字段名集合 = standard_fields + order_by 分子分母 + threshold 字段
+    """
+    allowed = {str(x).strip() for x in (metric_plan.get("standard_fields") or []) if str(x).strip()}
+    calculation = metric_plan.get("calculation")
+    if isinstance(calculation, dict):
+        order_by = calculation.get("order_by")
+        if isinstance(order_by, str):
+            for part in re.split(r"[/+\-*()\s]+", order_by):
+                if part.strip():
+                    allowed.add(part.strip())
+    filter_terms = metric_plan.get("filter_terms")
+    if isinstance(filter_terms, dict):
+        threshold = filter_terms.get("threshold")
+        if isinstance(threshold, dict) and isinstance(threshold.get("field"), str):
+            allowed.add(threshold["field"].strip())
+    return allowed
+
+
+def _selected_metric_fields(sql: str) -> Optional[List[str]]:
+    """取单条 SQL 的 SELECT 指标列（去标签列）；出现函数/表达式/``*`` 等无法判定项时返回 None。
+
+    Args:
+        sql: 单条 SELECT 语句
+
+    Returns:
+        指标列名列表；无法判定返回 None（调用方跳过校验，避免误伤）
+    """
+    if not sql:
+        return None
+    try:
+        from tools.sql_validator import parse_sql
+
+        structure = parse_sql(sql)
+    except Exception:  # noqa: BLE001
+        return None
+    if not structure:
+        return None
+    cols: List[str] = []
+    for _alias, col in structure.get("select_cols") or []:
+        if not col:
+            return None
+        name = str(col).strip().strip("`")
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            return None  # 星号 / 带函数或引号的表达式 → 无法判定，跳过
+        if name not in _TAG_COLUMNS:
+            cols.append(name)
+    return cols
+
+
+def metric_field_consistency_error(sql: str, metric_plan: Optional[Dict[str, Any]]) -> Optional[str]:
+    """指标-问题一致性校验（B-30）：SQL 取用的指标列必须来自指标计划，禁止近似字段替代。
+
+    背景：C2016 问「每股公积金」，SQL 实际取 net_asset_per_share（每股净资产）作答。
+    B-31 已在指标标准化契约上标注库外指标；本函数是生成侧的确定性兜底（零 LLM 成本），
+    只比较 SELECT 里的纯列名——函数 / 表达式 / ``*`` 一律跳过，避免误伤聚合与计算列。
+
+    Args:
+        sql: 生成待校验的 SQL（可多条，分号分隔）
+        metric_plan: _standardize_metrics 的输出；为 None 或未标注标准字段时不校验
+
+    Returns:
+        不一致的错误说明（供错误重试 / 拒答出口使用）；一致或无法判定返回 None
+    """
+    if not isinstance(metric_plan, dict):
+        return None
+    allowed = _allowed_metric_fields(metric_plan)
+    if not allowed:
+        return None
+    extras: set = set()
+    decided = False
+    for stmt in [x.strip() for x in str(sql or "").split(";") if x.strip()]:
+        selected = _selected_metric_fields(stmt)
+        if selected is None:
+            continue
+        decided = True
+        extras |= {c for c in selected if c not in allowed}
+    if not decided or not extras:
+        return None
+    return (
+        f"{_METRIC_MISMATCH_MARKER}（B-30）：SQL 取用了指标计划（standard_fields）之外的字段 "
+        + "、".join(sorted(extras))
+        + "；请只用 standard_fields 内字段，严禁用近似字段替代所问指标。"
+    )
 
 
 def _advice_risk_type(text: str) -> Optional[str]:
@@ -527,6 +665,15 @@ def _generate_sql(
             from tools.sql_validator import compile_check, validate_sql
 
             ok, serrs = validate_sql(sql, schema)
+            if ok:
+                # B-30：指标-问题一致性（纯规则、零 LLM 成本，先于 MySQL 编译执行）
+                cons_err = metric_field_consistency_error(sql, metric_plan)
+                _contract_stats().record(
+                    "metric_consistency", not cons_err, [cons_err] if cons_err else []
+                )
+                if cons_err:
+                    errors.append(cons_err)
+                    continue
             cerr = ""
             if ok and conn is not None:
                 cerr = compile_check(conn, sql)
@@ -834,6 +981,15 @@ def native_financial_query(rag: Any, user_query: str, user_id: str = "default") 
                 content, _tid = build_refuse_metric_out_of_scope(scope_metrics)
                 _log_fallback(_tid, detail="metric_out_of_scope: " + "、".join(scope_metrics))
                 logger.info("原生财务查询：库外指标拒答（%s）: %s", "、".join(scope_metrics), str(query_text)[:80])
+                return json.dumps(
+                    {"content": content, "image": [], "sql": "", "chart_json": None}, ensure_ascii=False
+                )
+            # B-30：模型漏标库外指标（把库外指标硬映射成近似字段）时的确定性兜底
+            stray_terms = unmarked_out_of_scope_terms(query_text, metric_plan)
+            if stray_terms:
+                content, _tid = build_refuse_metric_out_of_scope(stray_terms)
+                _log_fallback(_tid, detail="metric_out_of_scope_unmarked: " + "、".join(stray_terms))
+                logger.info("原生财务查询：库外指标漏标兜底拒答（%s）: %s", "、".join(stray_terms), str(query_text)[:80])
                 return json.dumps(
                     {"content": content, "image": [], "sql": "", "chart_json": None}, ensure_ascii=False
                 )

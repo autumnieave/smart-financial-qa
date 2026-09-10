@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 from typing import List, Optional, Tuple
 
-FALLBACK_PROMPT_VERSION = "2026-09-10-v3"  # B-31: 新增 refuse.metric_out_of_scope 库外指标拒答
+FALLBACK_PROMPT_VERSION = "2026-09-10-v4"  # B-30: 新增 refuse.metric_mismatch 指标口径不一致拒答
 
 #: 模板 ID（固定标识，写入日志/事件通道用于分支统计）
 REFUSE_OUT_OF_SCOPE = "refuse.out_of_scope"
@@ -35,6 +35,7 @@ REFUSE_INJECTION = "refuse.injection"  # B-27 注入指令拒答（先拒答后�
 SUGGEST_MISSING_FIELD = "suggest.missing_field"
 HUMAN_HIGH_RISK_ADVICE = "human.high_risk_advice"
 REFUSE_METRIC_OUT_OF_SCOPE = "refuse.metric_out_of_scope"  # B-31 库内未收录该指标（库外口径）
+REFUSE_METRIC_MISMATCH = "refuse.metric_mismatch"  # B-30 取到的字段与所问指标口径不一致
 HUMAN_RESEARCH_VIEW_DISCLAIMER = "human.research_view_disclaimer"  # B-29 研报预测/评级转述免责
 
 #: 模板 ID → 兜底类别（refuse / suggest / human）
@@ -46,6 +47,7 @@ _CATEGORY_MAP = {
     REFUSE_NOT_UNDERSTOOD: "refuse",
     REFUSE_INJECTION: "refuse",
     REFUSE_METRIC_OUT_OF_SCOPE: "refuse",
+    REFUSE_METRIC_MISMATCH: "refuse",
     SUGGEST_MISSING_FIELD: "suggest",
     HUMAN_HIGH_RISK_ADVICE: "human",
     HUMAN_RESEARCH_VIEW_DISCLAIMER: "human",
@@ -88,6 +90,29 @@ def build_refuse_metric_out_of_scope(metrics: Optional[List[str]] = None) -> Tup
         "请改用上述财务指标再问一次。"
     )
     return content, REFUSE_METRIC_OUT_OF_SCOPE
+
+
+def build_refuse_metric_mismatch(asked: Optional[List[str]] = None) -> Tuple[str, str]:
+    """指标口径不一致拒答（B-30）：SQL 取到的字段与用户所问指标不是同一个口径时不给数。
+
+    背景：C2016 问「每股公积金」，SQL 实际取 net_asset_per_share（每股净资产）作答。
+    本模板用于「生成侧一致性校验未通过」的出口——宁可拒答，也不用近似指标替代作答。
+
+    Args:
+        asked: 用户所问但库内无直接对应字段的指标名（可选，用于话术点名）
+
+    Returns:
+        (content, template_id)
+    """
+    names = "、".join([m for m in (asked or []) if m][:5])
+    what = f"「{names}」" if names else "该指标"
+    content = (
+        f"抱歉，库内没有与{what}直接对应的字段，本次查询取到的字段口径与您所问的指标不一致，"
+        "为避免用近似指标替代作答，这里不给出结果。"
+        "可查指标示例：营业收入、净利润、利润总额、资产负债率、销售毛利率、净资产收益率、研发费用、"
+        "每股收益、每股净资产等；请确认指标名称后重试。"
+    )
+    return content, REFUSE_METRIC_MISMATCH
 
 
 def build_refuse_data_not_found(subject: str = "", detail: str = "") -> Tuple[str, str]:
