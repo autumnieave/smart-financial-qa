@@ -14,7 +14,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from eval import golden as golden_mod
 from eval import metrics as metrics_mod
@@ -198,6 +198,38 @@ def cmd_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_consistency(args: Any) -> int:
+    """一致性套件入口（委托 eval/consistency.py）"""
+    from eval import consistency as consistency_mod
+
+    argv: List[str] = ["--n", str(args.n), "--limit", str(args.limit)]
+    if args.out_dir:
+        argv += ["--out-dir", args.out_dir]
+    if args.reuse:
+        argv += ["--reuse", args.reuse]
+    if args.dry_run:
+        argv.append("--dry-run")
+    return consistency_mod.main(argv)
+
+
+def cmd_llm_judge(args: Any) -> int:
+    """LLM-as-judge 入口（委托 eval/llm_judge.py）"""
+    from eval import llm_judge as judge_mod
+
+    argv: List[str] = ["--input", args.input]
+    if args.out_dir:
+        argv += ["--out-dir", args.out_dir]
+    if args.max_runs:
+        argv += ["--max-runs", str(args.max_runs)]
+    if args.model:
+        argv += ["--model", args.model]
+    if args.no_judge:
+        argv.append("--no-judge")
+    if args.no_sql_result:
+        argv.append("--no-sql-result")
+    return judge_mod.main(argv)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """组装子命令解析器"""
     parser = argparse.ArgumentParser(prog="eval", description="智能问数系统评估闭环（golden 版本化 + SQL/引用回归）")
@@ -256,6 +288,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_chal.add_argument("--rejudge", action="store_true",
                         help="用最新判定词表重判既有结果 JSON（不调用 LLM）+ 回填人工复核 sidecar")
     p_chal.set_defaults(func=cmd_challenge)
+
+    p_cons = sub.add_parser("consistency", help="一致性套件：同题重复生成，量化结构/数值/引用一致性（B-25A）")
+    p_cons.add_argument("--n", type=int, default=5, help="每题重复生成次数（默认 5）")
+    p_cons.add_argument("--limit", type=int, default=10, help="抽样题数（默认 10）")
+    p_cons.add_argument("--out-dir", default="", help="产物目录（默认 训练结果数据/consistency_<日期>）")
+    p_cons.add_argument("--reuse", default="", help="复用已有生成产物 JSON（作为第 1 次运行）")
+    p_cons.add_argument("--dry-run", action="store_true", help="只抽样，不调用 LLM")
+    p_cons.set_defaults(func=cmd_consistency)
+
+    p_judge = sub.add_parser("llm-judge", help="LLM-as-judge 初判 + 分歧样本清单（B-25A）")
+    p_judge.add_argument("--input", required=True, help="一致性套件产物（consistency_runs.json）")
+    p_judge.add_argument("--out-dir", default="", help="产物目录（默认 训练结果数据/llm_judge_<日期>）")
+    p_judge.add_argument("--max-runs", type=int, default=0, help="每题最多判定几次（0=全部）")
+    p_judge.add_argument("--model", default="", help="judge 模型（默认 qwen-flash）")
+    p_judge.add_argument("--no-judge", action="store_true", help="不调用 judge 模型（只算规则信号）")
+    p_judge.add_argument("--no-sql-result", action="store_true", help="不执行 SQL 取结果预览")
+    p_judge.set_defaults(func=cmd_llm_judge)
 
     p_rep = sub.add_parser("report", help="聚合最新证据生成评估报告")
     p_rep.add_argument("--out", default="docs/评估报告.md", help="输出路径（默认 docs/评估报告.md）")
