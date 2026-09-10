@@ -227,6 +227,10 @@ def cmd_llm_judge(args: Any) -> int:
         argv.append("--no-judge")
     if args.no_sql_result:
         argv.append("--no-sql-result")
+    if args.answer_key:
+        argv += ["--answer-key", args.answer_key]
+    if args.no_prior:
+        argv.append("--no-prior")
     return judge_mod.main(argv)
 
 
@@ -304,6 +308,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_judge.add_argument("--model", default="", help="judge 模型（默认 qwen-flash）")
     p_judge.add_argument("--no-judge", action="store_true", help="不调用 judge 模型（只算规则信号）")
     p_judge.add_argument("--no-sql-result", action="store_true", help="不执行 SQL 取结果预览")
+    p_judge.add_argument("--answer-key", default="", help="先验登记表路径（B-36，默认取 eval 内置默认值）")
+    p_judge.add_argument("--no-prior", action="store_true", help="不加载先验登记表（B-36）")
     p_judge.set_defaults(func=cmd_llm_judge)
 
     p_rep = sub.add_parser("report", help="聚合最新证据生成评估报告")

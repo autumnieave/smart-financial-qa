@@ -42,12 +42,8 @@ MAX_REFS_STORED = 10
 _MAX_SNIPPET_CHARS = 4000
 
 # 拒答/澄清措辞（与 prompts/fallback.py 的兜底话术同类；判定结构一致性用）
-REFUSE_MARKERS = (
-    "未包含", "未披露", "未显示", "不包含", "没有该字段", "无法提供", "无法回答",
-    "请补充", "请明确", "不在本次查询范围", "查询结果中不包含", "未找到",
-    # B-25A 补：误拒答/空结果话术（B2053 连续 4 次命中，原文见 consistency_20260910/）
-    "未查询到", "尚未收录", "暂未收录", "换个已覆盖范围", "未返回任何数据",
-)
+# B-36：统一从 eval/answer_keys.py 引入，避免 judge / consistency / 先验校验三份词表漂移
+from eval.answer_keys import REFUSE_MARKERS  # noqa: E402  # noqa: F401
 
 _PUNCT_RE = re.compile(r"[\s：:；;，,、。·“”\"'（）()\[\]【】]")
 _TABLE_LINE_RE = re.compile(r"^\s*\|.*\|\s*$", re.M)

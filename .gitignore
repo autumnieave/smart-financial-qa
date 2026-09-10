@@ -69,6 +69,7 @@ database/训练数据库.sql
 # ===== 竞赛数据派生文件（本地保留，不入库） =====
 database/extracted_missing_fields.csv
 database/golden/
+database/answer_keys/
 
 
 # ===== 本地任务清单/夜间任务（本地保留，不上传） =====

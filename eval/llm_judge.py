@@ -20,6 +20,10 @@
 
 口径声明：judge **未校准**，其判定不得作为对外结论；必须与人工结果对齐（一致率 ≥90%，
 见 B-25B）后才可用于回归门禁。
+
+B-36 增补：支持 `--answer-key` 加载**答案先验登记表**（`eval/answer_keys.py`），
+用确定性规则识别「应有数据却拒答」。先验来自登记表里**人工审核过的标准 SQL** 的只读复算，
+不抄 golden 名单；未登记 / 登记冲突一律按 `unknown` 处理、不产生误拒答判定。
 """
 
 import argparse
@@ -35,6 +39,15 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from eval.answer_keys import (  # noqa: E402  # B-36：先验登记 + 共用词表/只读执行器
+    DEFAULT_ANSWER_KEYS,
+    REFUSE_MARKERS,  # noqa: F401  # 由本模块再对外暴露，保持旧导入路径可用
+    attach_priors,
+    execute_readonly_sql,
+    key_numbers,
+    load_answer_keys,
+)
+
 DEFAULT_MODEL = "qwen-flash"
 DEFAULT_OUT_DIR = _REPO_ROOT / "训练结果数据" / "llm_judge_20260910"
 CHALLENGE_REVIEW = _REPO_ROOT / "训练结果数据" / "challenge_v2_review.json"
@@ -45,14 +58,8 @@ MAX_SQL_CHARS = 2500
 MAX_SQL_PREVIEW_CHARS = 2000
 MAX_SQL_ROWS = 30
 
-REFUSE_MARKERS = (
-    "未包含", "未披露", "未显示", "不包含", "没有该字段", "无法提供", "无法回答",
-    "请补充", "请明确", "不在本次查询范围", "查询结果中不包含", "未找到",
-    # B-25A 补：误拒答/空结果话术（B2053 连续 4 次命中，原文见 consistency_20260910/）
-    "未查询到", "尚未收录", "暂未收录", "换个已覆盖范围", "未返回任何数据",
-)
-
-_NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
+# 拒答/澄清话术与关键数值抽取已下沉到 `eval/answer_keys.py`（judge / consistency / 先验校验
+# 共用同一份，避免多份词表漂移）；本模块在文件头 import 后再对外暴露，旧导入路径保持可用。
 
 CRITERIA: List[Dict[str, str]] = [
     {
@@ -216,26 +223,6 @@ def parse_judge_response(raw: str) -> Dict[str, Any]:
     return out
 
 
-def key_numbers(text: str) -> set:
-    """抽取「需核对的关键数值」：过滤年份与单个数字（季度/序号等噪声）。
-
-    Args:
-        text: 答案文本
-
-    Returns:
-        关键数值集合（保留小数）
-    """
-    collapsed = re.sub(r"(?<=\d)\s+(?=[\d.])", "", text or "")
-    out = set()
-    for n in _NUMBER_RE.findall(collapsed):
-        if len(n) == 4 and n.isdigit() and 1900 <= int(n) <= 2100:
-            continue  # 年份：核对价值低且引用片段常不写年份
-        if n.isdigit() and len(n) <= 1:
-            continue  # 单个数字：多为 top10 / Q3 / 第3条 之类噪声
-        out.add(n)
-    return out
-
-
 def rule_signal(answer: str, references: Sequence[Dict[str, Any]], sql_text: str) -> str:
     """规则信号（确定性口径，与 judge 交叉用于找分歧）。
 
@@ -303,6 +290,10 @@ def find_disagreements(
             types.append("与历史人工结论不一致（人工通过 / judge 失败）")
         if human == "不通过" and judge == "pass":
             types.append("与历史人工结论不一致（人工不通过 / judge 通过）")
+        # B-36：先验判定的「误拒答（应有数据）」单列一类，与"合理拒答"区分
+        prior_flag = str(row.get("误拒答判定") or "")
+        if prior_flag:
+            types.append(prior_flag)
         if not types:
             continue
         out.append(
@@ -316,6 +307,14 @@ def find_disagreements(
                 "分歧类型": "；".join(types),
                 "judge理由": str(row.get("理由") or "")[:200],
                 "待人工核对": "",
+                "先验": str(row.get("先验") or "unknown"),
+                "先验依据": str(row.get("先验依据") or "")
+                + (f"；{row.get('先验理由')}" if row.get("先验理由") else ""),
+                "本次SQL行数": str(row.get("本次SQL行数") if row.get("本次SQL行数") is not None else "—"),
+                "误拒答判定": prior_flag,
+                "先验数值命中率": str(
+                    row.get("先验数值命中率") if row.get("先验数值命中率") is not None else "—"
+                ),
             }
         )
     return out
@@ -324,6 +323,8 @@ def find_disagreements(
 DISAGREEMENT_COLUMNS = [
     "编号", "子问题", "第几次", "judge判定", "规则信号", "历史人工结论",
     "分歧类型", "judge理由", "待人工核对",
+    # B-36：先验列（确定性规则，与 judge 判定并列进入人工核对）
+    "先验", "先验依据", "本次SQL行数", "误拒答判定", "先验数值命中率",
 ]
 
 
@@ -340,38 +341,41 @@ def write_csv(path: Path, columns: Sequence[str], rows: Sequence[Dict[str, str]]
 # ---------------------------------------------------------------- 运行（需 LLM / 可选 MySQL）
 
 
+def format_sql_preview(
+    rows: Optional[List[Dict[str, Any]]], err: str = "", max_rows: int = MAX_SQL_ROWS
+) -> str:
+    """把只读查询结果渲染成 judge 可读的预览文本。
+
+    Args:
+        rows: 结果行（None 表示执行失败/被拦截）
+        err: 错误说明（失败时给出）
+        max_rows: 最多展示行数
+
+    Returns:
+        预览文本；执行失败时返回空串
+    """
+    if rows is None:
+        return ""
+    if not rows:
+        return "（查询返回 0 行）"
+    shown = min(max_rows, len(rows))
+    lines = [", ".join(f"{k}={v}" for k, v in row.items()) for row in rows[:max_rows]]
+    header = f"（结果集共 {len(rows)} 行，仅展示前 {shown} 行；未展示行的数值不得判为编造）"
+    return header + "\n" + "\n".join(lines)
+
+
 def collect_sql_preview(sql_text: str, max_rows: int = MAX_SQL_ROWS) -> Tuple[str, str]:
     """执行该题 SQL 并返回结果预览（只读 SELECT；失败返回 ("", 错误说明)）。
 
     Returns:
         (预览文本, 错误说明)；错误非空时预览为空
     """
-    if not sql_text.strip():
+    if not (sql_text or "").strip():
         return "", ""
-    stmts = [s.strip() for s in re.split(r";\s*", sql_text) if s.strip()]
-    risky = [s for s in stmts if not s.lower().lstrip().startswith(("select", "with", "("))]
-    if risky:
-        return "", "存在非 SELECT 语句，跳过执行（只读口径）"
-    try:
-        from config.rag_config import get_config
-        from tools.native_financial import _execute_sql, _load_schema_conn
-
-        schema, conn = _load_schema_conn(get_config())
-        if conn is None:
-            return "", "MySQL 不可用"
-        try:  # 与线上一致：15s 语句级超时（MySQL 5.7+，只影响 SELECT）
-            conn.cursor().execute("SET SESSION max_execution_time=15000")
-        except Exception:  # noqa: BLE001
-            pass
-        rows = _execute_sql(conn, sql_text)
-    except Exception as exc:  # noqa: BLE001
-        return "", f"{type(exc).__name__}: {str(exc)[:120]}"
-    if not rows:
-        return "（查询返回 0 行）", ""
-    shown = min(max_rows, len(rows))
-    lines = [", ".join(f"{k}={v}" for k, v in row.items()) for row in rows[:max_rows]]
-    header = f"（结果集共 {len(rows)} 行，仅展示前 {shown} 行；未展示行的数值不得判为编造）"
-    return header + "\n" + "\n".join(lines), ""
+    rows, err = execute_readonly_sql(sql_text)
+    if rows is None:
+        return "", err
+    return format_sql_preview(rows, err, max_rows), ""
 
 
 def load_consistency_runs(path: Path) -> List[Dict[str, Any]]:
@@ -399,17 +403,34 @@ def judge_rows(
     llm: Any,
     with_sql_result: bool = True,
     sleep_seconds: float = 0.4,
+    answer_keys: Optional[Dict[str, Any]] = None,
+    prior_executor: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
-    """逐条判定（judge 失败不阻断整轮，标 judge_error）。"""
+    """逐条判定（judge 失败不阻断整轮，标 judge_error）。
+
+    Args:
+        rows: 一致性套件明细行
+        llm: judge 模型（None = 不调用模型，只算规则信号）
+        with_sql_result: 是否只读执行该题 SQL 取结果预览与行数
+        sleep_seconds: 每条之间的限速间隔
+        answer_keys: 先验登记表（B-36）；为空时先验列一律 unknown
+        prior_executor: 先验标准 SQL 的只读执行器（默认取真实库；单测可注入 stub）
+    """
     out: List[Dict[str, Any]] = []
     sql_cache: Dict[str, Tuple[str, str]] = {}
+    row_count_cache: Dict[str, Optional[int]] = {}
     for i, row in enumerate(rows, 1):
         sql_text = str(row.get("SQL") or "")
         preview, sql_err = ("", "")
+        sql_row_count: Optional[int] = None
         if with_sql_result and sql_text:
             if sql_text not in sql_cache:
-                sql_cache[sql_text] = collect_sql_preview(sql_text)
+                # B-36：一次执行同时拿「预览」与「行数」，供 judge 与先验校验共用
+                sql_rows, exec_err = execute_readonly_sql(sql_text)
+                sql_cache[sql_text] = (format_sql_preview(sql_rows, exec_err), exec_err)
+                row_count_cache[sql_text] = None if sql_rows is None else len(sql_rows)
             preview, sql_err = sql_cache[sql_text]
+            sql_row_count = row_count_cache[sql_text]
         prompt = build_judge_prompt(
             row.get("子问题") or "", row.get("答案") or "", row.get("引用") or [], sql_text, preview
         )
@@ -444,6 +465,7 @@ def judge_rows(
                 "规则信号": rule_signal(row.get("答案") or "", row.get("引用") or [], sql_text),
                 "引用数": len(row.get("引用") or []),
                 "SQL结果": "已执行" if preview else ("未执行" if not sql_text else f"未获取({sql_err})"),
+                "本次SQL行数": sql_row_count,
                 "答案字数": len(row.get("答案") or ""),
             }
         )
@@ -455,7 +477,15 @@ def judge_rows(
         )
         if sleep_seconds:
             time.sleep(sleep_seconds)
-    return out
+    # B-36：统一附加先验列（未登记也显式标 unknown，便于核对覆盖度）。
+    # 注意：输出行只保留「答案字数」以控制产物体积，而误拒答判定需要答案原文，
+    # 故先临时挂上原文完成判定，再摘掉（否则 has_data 题会被全量误判为误拒答）。
+    for row_out, row_src in zip(out, rows):
+        row_out["答案"] = str(row_src.get("答案") or "")
+    enriched = attach_priors(out, answer_keys or {}, prior_executor)
+    for row_out in enriched:
+        row_out.pop("答案", None)
+    return enriched
 
 
 def summarize(rows: Sequence[Dict[str, Any]], disagreements: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
@@ -472,6 +502,11 @@ def summarize(rows: Sequence[Dict[str, Any]], disagreements: Sequence[Dict[str, 
         per_criterion[key] = counter
     rule_agree = sum(1 for r in rows if r["judge判定"] == r["规则信号"])
     comparable = sum(1 for r in rows if r["规则信号"] != "uncertain" and r["judge判定"] != "judge_error")
+    prior_counter: Dict[str, int] = {}
+    for row in rows:
+        prior_key = str(row.get("先验") or "unknown")
+        prior_counter[prior_key] = prior_counter.get(prior_key, 0) + 1
+    misrefusal_count = sum(1 for r in rows if str(r.get("误拒答判定") or ""))
     return {
         "判定条数": total,
         "judge判定分布": verdicts,
@@ -480,6 +515,13 @@ def summarize(rows: Sequence[Dict[str, Any]], disagreements: Sequence[Dict[str, 
         "与规则信号一致的条数": rule_agree,
         "与规则信号一致率": round(rule_agree / comparable, 4) if comparable else None,
         "分歧样本数": len(disagreements),
+        "先验分布": prior_counter,
+        "误拒答（应有数据）条数": misrefusal_count,
+        "先验口径声明": (
+            "先验为确定性规则（不依赖 judge）：登记表 database/answer_keys/v1.json，"
+            "has_data 项由人工审核过的标准 SQL 只读复算自校验；未登记 / 登记冲突一律 unknown，"
+            "不产生误拒答判定。误拒答是否成立最终由人工核对（B-36 验收 / B-25B）。"
+        ),
         "口径声明": "judge 未校准，不得作为对外结论；一致性阈值与启用边界由 B-25B 人工决策。",
     }
 
@@ -500,6 +542,8 @@ def render_md(summary: Dict[str, Any], rows: Sequence[Dict[str, Any]],
         f"| judge 判定分布 | {json.dumps(summary['judge判定分布'], ensure_ascii=False)} |",
         f"| 与规则信号一致率 | {summary['与规则信号一致率']}（可比 {summary['与规则信号可比的条数']} 条） |",
         f"| 分歧样本数 | {summary['分歧样本数']} |",
+        f"| 先验分布 | {json.dumps(summary.get('先验分布', {}), ensure_ascii=False)} |",
+        f"| 误拒答（应有数据）条数 | {summary.get('误拒答（应有数据）条数', 0)} |",
         "",
         "## 各判据分布",
         "",
@@ -514,21 +558,32 @@ def render_md(summary: Dict[str, Any], rows: Sequence[Dict[str, Any]],
     if not disagreements:
         lines.append("（无分歧样本）")
     else:
-        lines.append("| 编号 | 第几次 | judge判定 | 规则信号 | 历史人工结论 | 分歧类型 | judge理由 | 待人工核对 |")
-        lines.append("| --- | --- | --- | --- | --- | --- | --- | --- |")
+        lines.append(
+            "| 编号 | 第几次 | judge判定 | 规则信号 | 先验 | 误拒答判定 | 分歧类型 | judge理由 | 待人工核对 |"
+        )
+        lines.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
         for d in disagreements:
             lines.append(
                 f"| {d['编号']} | {d['第几次']} | {d['judge判定']} | {d['规则信号']} | "
-                f"{d['历史人工结论']} | {d['分歧类型']} | {d['judge理由'].replace('|', '/')} | {d['待人工核对']} |"
+                f"{d.get('先验', '—')} | {d.get('误拒答判定', '') or '—'} | {d['分歧类型']} | "
+                f"{d['judge理由'].replace('|', '/')} | {d['待人工核对']} |"
             )
     lines += ["", "## 逐条判定明细", "",
-              "| 编号 | 第几次 | judge判定 | 判据1 | 判据2 | 判据3 | 判据4 | 规则信号 | 引用数 | SQL结果 |",
-              "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
+              "| 编号 | 第几次 | judge判定 | 判据1 | 判据2 | 判据3 | 判据4 | 规则信号 | 引用数 | SQL结果 | 先验 | 本次SQL行数 |",
+              "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
     for row in rows:
         lines.append(
             f"| {row['编号']} | {row['第几次']} | {row['judge判定']} | {row['判据1']} | {row['判据2']} | "
-            f"{row['判据3']} | {row['判据4']} | {row['规则信号']} | {row['引用数']} | {row['SQL结果']} |"
+            f"{row['判据3']} | {row['判据4']} | {row['规则信号']} | {row['引用数']} | {row['SQL结果']} | "
+            f"{row.get('先验', 'unknown')} | {row.get('本次SQL行数') if row.get('本次SQL行数') is not None else '—'} |"
         )
+    lines += ["", "## 先验与误拒答（B-36）", "",
+              f"- 先验口径：{summary.get('先验口径声明', '')}",
+              f"- 误拒答（应有数据）：**{summary.get('误拒答（应有数据）条数', 0)}** 条"
+              "（确定性规则，先验成立 + 本次回答未给数据）；",
+              "- 判读顺序：先看「误拒答判定」列 → 再核对「先验依据」（标准 SQL 复算行数），"
+              "prior_conflict / prior_error 表示登记项本身待复核、**不代表答案有问题**；",
+              "- 附加提示：「先验数值命中率」只作参考（答案含派生指标时天然偏低），不参与判定。", ""]
     lines += ["", "## 待人工处理（B-25B）", "",
               "1. 只核对上表「分歧样本清单」（目标 ≤20 条），逐条填「待人工核对」；",
               "2. 决定 judge 是否可用于门禁与一致率阈值（建议 ≥90%）；",
@@ -558,6 +613,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--no-judge", action="store_true", help="不调用 judge 模型（只算规则信号）")
     parser.add_argument("--no-sql-result", action="store_true", help="不执行 SQL 取结果预览")
     parser.add_argument("--review", default=str(CHALLENGE_REVIEW), help="历史人工复核 sidecar 路径")
+    parser.add_argument(
+        "--answer-key", default=str(DEFAULT_ANSWER_KEYS),
+        help="答案先验登记表路径（B-36；默认 database/answer_keys/v1.json）",
+    )
+    parser.add_argument("--no-prior", action="store_true", help="不加载先验登记表（B-36，先验列全 unknown）")
     args = parser.parse_args(argv)
 
     rows = load_consistency_runs(Path(args.input))
@@ -582,7 +642,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         print(f"[judge] 模型：{args.model}", file=sys.stderr, flush=True)
 
-    judged = judge_rows(rows, llm, with_sql_result=not args.no_sql_result)
+    keys = {} if args.no_prior else load_answer_keys(Path(args.answer_key))
+    if keys:
+        print(f"[prior] 先验登记 {len(keys)} 题：{'、'.join(sorted(keys))}", file=sys.stderr, flush=True)
+    else:
+        why = "--no-prior" if args.no_prior else f"未找到登记表 {args.answer_key}"
+        print(f"[prior] 先验未启用（{why}），先验列全部为 unknown", file=sys.stderr, flush=True)
+
+    judged = judge_rows(rows, llm, with_sql_result=not args.no_sql_result, answer_keys=keys)
     disagreements = find_disagreements(judged, load_review_map(Path(args.review)))
     summary = summarize(judged, disagreements)
 
