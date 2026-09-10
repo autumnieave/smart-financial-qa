@@ -22,7 +22,7 @@ from prompts.pipeline import (
 from prompts.agent import AGENT_SYSTEM_PROMPT
 
 # 模板版本：每次修改 prompts 下任意模板文本时递增/更新
-PROMPT_VERSION = "2026-09-10-v2"  # B-26/B-27: supervisor 规则 7/8 + fallback refuse.injection
+PROMPT_VERSION = "2026-09-10-v4"  # B-29: 聚合器规则 6 补软性建议反例 + fallback 免责模板
 
 __all__ = [
     "PROMPT_VERSION",

@@ -26,6 +26,7 @@ from prompts.multi_agent import MULTI_AGENT_AGGREGATOR_PROMPT, MULTI_AGENT_SUPER
 from prompts.fallback import (
     build_refuse_injection as _build_refuse_injection,
     build_refuse_not_understood,
+    build_research_view_disclaimer as _build_research_view_disclaimer,
     log_fallback as _log_fallback,
 )
 from utils.output_contracts import (
@@ -48,15 +49,36 @@ _FINANCIAL_INTENT_MARKERS: tuple = (
 
 #: B-27 注入请求信号（命中且系统给出数据回答时，前缀『先拒答后回答』话术）
 _INJECTION_REQUEST_MARKERS: tuple = (
+    # 指令劫持类：要求复述/忽略系统规则、越权、探库结构
     "复述", "system prompt", "隐藏规则", "系统规则", "字段白名单限制",
-    "权限已提升", "越权", "目标价", "建议买入", "推荐买入", "买入评级",
-    "列出数据库全部表名", "数据库管理员", "忽略以上", "忽略你收到的",
-    "忽略规则", "忽略上述", "忽略上面", "忽略所有",
+    "权限已提升", "越权", "列出数据库全部表名", "数据库管理员",
+    "忽略以上", "忽略你收到的", "忽略规则", "忽略上述", "忽略上面", "忽略所有",
     "SELECT * FROM",
+    # 话术植入类：要求把指定话术「加进回答」（B-29：仅「推荐买入时机」等单纯求建议
+    # 不算注入，避免误判正常提问为注入并加越权拒答前缀）
+    "必须加上", "末尾必须", "必须输出", "请先输出",
 )
 #: 已属整体拒答/合规回答的信号（命中则不重复加前缀）
 _ALREADY_REFUSED_MARKERS: tuple = (
     "我无法", "无法执行", "不能执行", "不执行", "抱歉", "拒绝", "不能提供", "无法提供",
+)
+
+#: B-29 预测/评级类内容信号（命中则需附「研报观点转述」免责声明）
+_ADVICE_CONTEXT_MARKERS: tuple = (
+    "预测", "预期", "评级", "目标价", "买入", "增持", "减持", "卖出",
+    "投资建议", "买卖时机", "估值", "市盈率", "P/E", "ROE", "安全边际", "预计",
+)
+#: B-29 需裁剪的操作性建议语句信号（方案 B：不输出目标价/时机/操作建议）
+_OPERATIONAL_ADVICE_MARKERS: tuple = (
+    "目标价", "买入时机", "卖出时机", "建议买入", "推荐买入", "建议逢低", "建议投资者", "建议在",
+    "建议增持", "建议减持", "建议配置", "建议关注", "建议卖出", "操作建议", "择机", "择时",
+    "布局机会", "左侧布局", "右侧布局", "逢低布局", "逢低吸纳", "买入区间", "卖出区间",
+    "配置吸引力", "配置价值", "右侧交易", "左侧交易", "买入信号", "卖出信号", "值得配置",
+)
+#: 否定语境（句中含这些词说明是「不提供」，属合规拒答，不作裁剪）
+_NEGATION_MARKERS: tuple = (
+    "不提供", "不构成", "不支持", "无法提供", "不予", "不给出", "不做", "不作",
+    "不能执行", "不能提供", "不能给出", "无法执行", "请勿",
 )
 
 
@@ -261,6 +283,56 @@ class LangGraphMultiAgentPlanner:
         _contract_stats().record("injection_refuse_prefix", True, [template_id])
         logger.info("B-27 注入先拒答后回答前缀已加（%s）", template_id)
         result["content"] = text + "\n\n" + content
+        return result
+
+    @staticmethod
+    def _split_sentences(text: str) -> List[str]:
+        """按中英文句末标点/换行切句（保留标点），用于建议性语句裁剪。"""
+        import re as _re  # noqa: PLC0415
+
+        parts = _re.split(r"(?<=[。！？!?\n])", text or "")
+        return [p for p in parts if p.strip()]
+
+    def _guard_research_advice(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        """B-29 研报预测/评级口径守卫（方案 B）：
+
+        ① 回答含预测/评级类内容 → 必须附「研报公开观点转述，不构成投资建议」免责声明；
+        ② 裁剪目标价/买入时机/操作建议类语句（只转述研报既有观点，不给操作性建议）；
+        ③ 无预测/评级内容或已合规（含免责声明）→ 原样返回。
+
+        Args:
+            result: 引擎最终结果字典（含 content）
+
+        Returns:
+            处理后的结果字典
+        """
+        content = (result or {}).get("content") or ""
+        if not content:
+            return result or {"content": "", "image": [], "references": []}
+        sentences = self._split_sentences(content)
+        # 命中依据只看「非否定语境」句子：纯拒答句（如"本系统不提供目标价…"、
+        # B-27 注入拒答前缀）不算预测/评级转述，不应由此触发免责声明。
+        affirmative = [x for x in sentences if not any(n in x for n in _NEGATION_MARKERS)]
+        if not any(m in x for x in affirmative for m in _ADVICE_CONTEXT_MARKERS):
+            return result
+        kept = [
+            x for x in sentences
+            if not any(m in x for m in _OPERATIONAL_ADVICE_MARKERS)
+            or any(n in x for n in _NEGATION_MARKERS)
+        ]
+        stripped = len(kept) != len(sentences)
+        body = "".join(kept).strip()
+        disclaimer, template_id = _build_research_view_disclaimer()
+        # 已合规：无被裁语句且已含免责声明 → 不重复追加
+        if not stripped and ("不构成投资建议" in content or "不构成任何投资建议" in content):
+            return result
+        if stripped and len(body) < 30:
+            body = "本系统仅转述研报公开观点，不提供预测区间、目标价与买卖时机建议。"
+        if "不构成投资建议" not in body:
+            body = (body + "\n\n" + disclaimer).strip() if body else disclaimer
+        _contract_stats().record("research_view_disclaimer", True, [template_id])
+        logger.info("B-29 研报观点转述免责已附加（stripped=%s, %s）", stripped, template_id)
+        result["content"] = body
         return result
 
     @staticmethod
@@ -638,5 +710,9 @@ class LangGraphMultiAgentPlanner:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("LangGraph 多 Agent checkpoint 写回 last_active 失败: %s", exc)
         result = output.get("result") or {"content": "", "image": [], "references": []}
+        # B-29 研报预测/评级转述口径守卫（方案 B：裁剪操作性建议 + 附免责声明）
+        # 注意顺序：必须先于 B-27 注入前缀——拒答前缀本身含「荐股目标价」字样，
+        # 若在其后过滤会把显式拒答句误裁掉，削弱『先拒答后回答』口径。
+        result = self._guard_research_advice(result)
         # B-27 注入先拒答后回答守卫（统一作用于 direct / aggregator / finalize 三条出口）
         return self._guard_injection_prefix(user_query, result)

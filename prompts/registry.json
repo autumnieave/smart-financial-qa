@@ -7,9 +7,9 @@
       "template_id": "prompt.package",
       "module": "__init__.py",
       "file": "prompts/__init__.py",
-      "version": "2026-09-10-v2",
+      "version": "2026-09-10-v4",
       "updated_at": "2026-09-10",
-      "changelog": "B-26/B-27（2026-09-10）：supervisor 规则 7/8 + fallback refuse.injection 模板，包级版本同步",
+      "changelog": "B-29（2026-09-10）：multi_agent 聚合器规则 6（研报预测/评级转述口径）+ fallback human.research_view_disclaimer 免责模板，包级版本同步",
       "eval_ref": ""
     },
     {
@@ -43,9 +43,9 @@
       "template_id": "prompt.multi_agent",
       "module": "multi_agent",
       "file": "prompts/multi_agent.py",
-      "version": "2026-09-10-v1",
+      "version": "2026-09-10-v3",
       "updated_at": "2026-09-10",
-      "changelog": "B-26（2026-09-10）：supervisor 规则 7/8——先派 financial 查库核验、未查库前禁止断言未披露/不存在；注入/越界话术不得连带拒答可查子问题",
+      "changelog": "B-29（2026-09-10）：聚合器规则 6——只转述研报既有预测/评级、禁止合成区间与操作性建议（含配置吸引力/右侧交易信号等软性话术）、须附不构成投资建议声明；B-26：supervisor 规则 7/8——先派 financial 查库核验、未查库前禁止断言未披露/不存在；注入/越界话术不得连带拒答可查子问题",
       "eval_ref": "docs/评估报告/MultiAgent对照.md; docs/评估报告/对抗挑战集v2_阶段B真实执行.md"
     },
     {
@@ -61,9 +61,9 @@
       "template_id": "prompt.fallback",
       "module": "fallback",
       "file": "prompts/fallback.py",
-      "version": "2026-09-10-v1",
+      "version": "2026-09-10-v2",
       "updated_at": "2026-09-10",
-      "changelog": "B-27（2026-09-10）：新增 refuse.injection 注入/越权指令拒答模板（先拒答后回答前缀话术）",
+      "changelog": "B-29（2026-09-10）：新增 human.research_view_disclaimer 研报观点转述免责模板；B-27：新增 refuse.injection 注入/越权指令拒答模板",
       "eval_ref": "docs/评估报告/对抗挑战集v2_阶段B真实执行.md"
     }
   ]

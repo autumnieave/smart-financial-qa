@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 from typing import List, Optional, Tuple
 
-FALLBACK_PROMPT_VERSION = "2026-09-10-v1"  # B-27: 新增 refuse.injection 注入拒答模板
+FALLBACK_PROMPT_VERSION = "2026-09-10-v2"  # B-29: 新增 human.research_view_disclaimer 研报观点转述免责
 
 #: 模板 ID（固定标识，写入日志/事件通道用于分支统计）
 REFUSE_OUT_OF_SCOPE = "refuse.out_of_scope"
@@ -34,6 +34,7 @@ REFUSE_NOT_UNDERSTOOD = "refuse.not_understood"
 REFUSE_INJECTION = "refuse.injection"  # B-27 注入指令拒答（先拒答后回答）
 SUGGEST_MISSING_FIELD = "suggest.missing_field"
 HUMAN_HIGH_RISK_ADVICE = "human.high_risk_advice"
+HUMAN_RESEARCH_VIEW_DISCLAIMER = "human.research_view_disclaimer"  # B-29 研报预测/评级转述免责
 
 #: 模板 ID → 兜底类别（refuse / suggest / human）
 _CATEGORY_MAP = {
@@ -45,6 +46,7 @@ _CATEGORY_MAP = {
     REFUSE_INJECTION: "refuse",
     SUGGEST_MISSING_FIELD: "suggest",
     HUMAN_HIGH_RISK_ADVICE: "human",
+    HUMAN_RESEARCH_VIEW_DISCLAIMER: "human",
 }
 
 
@@ -135,6 +137,22 @@ def build_suggest_missing(
             "（例如：『贵州茅台 2025 年 Q3 净利润』）。"
         )
     return content.strip(), SUGGEST_MISSING_FIELD
+
+
+def build_research_view_disclaimer() -> Tuple[str, str]:
+    """研报预测/评级转述免责声明（B-29，方案 B 口径）。
+
+    用途：回答转述研报既有盈利预测/评级时，必须先给免责声明——只转述公开观点，
+    不提供预测区间、目标价与买卖时机建议，不构成投资建议。
+
+    Returns:
+        (content, template_id)
+    """
+    content = (
+        "以上为研报公开观点的转述（含研报既有盈利预测与评级），仅供参考，不构成投资建议；"
+        "本系统不提供预测区间、目标价与买卖时机建议，实际操作请结合专业机构意见自行判断。"
+    )
+    return content, HUMAN_RESEARCH_VIEW_DISCLAIMER
 
 
 def build_human_risk_advice(risk_type: str = "投资建议") -> Tuple[str, str]:
